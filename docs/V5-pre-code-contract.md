@@ -45,12 +45,12 @@ ready ⇔ criticalMissing == 0
 criticalMissing = blocking=true && status=MISSING 항목 수
 ```
 - 현재: contract.readiness로 산출 + UI 게이트 카드. ✅
-- planDeliveryTasks 강제 연결: 📋 — 기본 off(데모 흐름 보호), `DEVFLOW_REQUIRE_IMPL_CONTRACT=1` 스타일 플래그 도입은 후속. (Feature Flag 체계가 먼저 필요 — V3 §33)
+- **planDeliveryTasks 강제 연결**: ✅ — `DEVFLOW_REQUIRE_IMPL_CONTRACT=1`로 활성화(기본 off). 미준비 시 최상위 질문과 함께 409 에러.
 
 ## 5. PRE_IMPLEMENTATION_CONTRACT artifact
 
 - GET /api/projects/:id/contract — sections/items/status/source/confidence/blocking + readiness + openQuestions. ✅
-- markdown export(.devflow/) 통합: 📋 후속.
+- **Markdown export**: GET /api/projects/:id/contract/export → PRE_IMPLEMENTATION_CONTRACT.md attachment. ✅
 
 ## 6. 검증
 
