@@ -10,12 +10,16 @@ import { EvidenceCenter, TimelineView, SystemReadinessView, ConflictCenter, Disc
 import { AgentOffice } from "../ui/agent-office/AgentOffice.js";
 import { TeamComposer } from "../ui/team/TeamComposer.js";
 import { WorkflowComposer } from "../ui/workflow/WorkflowComposer.js";
+import { DevelopmentWorkspace } from "../ui/workspace/DevelopmentWorkspace.js";
+import { PreCodeContract } from "../ui/workspace/PreCodeContract.js";
 import { CapacityCenter } from "../ui/capacity/CapacityCenter.js";
 import { CanonView } from "../ui/canon/CanonView.js";
 
 const TABS = [
   ["mission", "Mission Control"],
+  ["workspace", "Development Workspace"],
   ["discovery", "Discovery & Spec"],
+  ["contract", "Implementation Contract"],
   ["graph", "DevFlow Graph"],
   ["tasks", "Tasks"],
   ["agents", "Agent Office"],
@@ -163,6 +167,8 @@ function Shell(): JSX.Element {
             {notice ? <div className="rounded border border-sky-900 bg-sky-950/40 px-3 py-2 text-xs text-sky-200">{notice}</div> : null}
 
             {tab === "mission" && <MissionControl projectId={projectId} overview={overview} onChanged={() => void reload()} onNavigate={setTab} />}
+            {tab === "workspace" && <DevelopmentWorkspace projectId={projectId} />}
+            {tab === "contract" && <PreCodeContract projectId={projectId} />}
             {tab === "discovery" && (
               <div className="space-y-4">
                 <DiscoveryPanel projectId={projectId} discovery={discovery} coverage={coverage} onChanged={() => void reload()} />
