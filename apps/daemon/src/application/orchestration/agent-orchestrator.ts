@@ -178,9 +178,40 @@ export class AgentOrchestrator {
     });
   }
 
+  /**
+   * Graceful shutdown drain (§25): stops every active runtime session so no CLI
+   * child outlives the daemon. Runs are finalized as SYSTEM_SHUTDOWN and tasks
+   * return to READY for restart-safe resumption. Returns stopped run ids.
+   */
+  async stopAllActive(): Promise<string[]> {
+    const active = this.ports.docs
+      .list<AgentRun>("agent_run")
+      .filter((r) => r.status === "RUNNING" && r.sessionId);
+    const stopped: string[] = [];
+    for (const run of active) {
+      try {
+        const runtime = this.runtimes.get(run.runtimeConfigId.replace("runtime_", ""));
+        await runtime.stop({ sessionId: run.sessionId! }).catch(() => undefined);
+        const now = new Date().toISOString();
+        const drained: AgentRun = { ...run, status: "FAILED", failureReason: "SYSTEM_SHUTDOWN", endedAt: now };
+        this.ports.docs.put("agent_run", drained.id, drained.projectId, drained);
+        if (run.taskId) {
+          const task = this.ports.docs.get<TaskContract>("task", run.taskId);
+          if (task && task.status === "RUNNING") {
+            this.ports.docs.put("task", task.id, task.projectId, { ...task, status: "READY", updatedAt: now });
+          }
+        }
+        this.emit(run.projectId, "agent.run_cancelled", run.taskId, { runId: run.id, reason: "SYSTEM_SHUTDOWN" });
+        stopped.push(run.id);
+      } catch {
+        // keep draining other runs even if one adapter misbehaves
+      }
+    }
+    return stopped;
+  }
+
   /** User cancellation (§39): kill child process, checkpoint-free fail, release claim. */
-  async cancelRun(runId: string): Promise<AgentRun> {
-    const run = this.ports.docs.require<AgentRun>("agent_run", runId);
+  async cancelRun(runId: string): Promise<AgentRun> {    const run = this.ports.docs.require<AgentRun>("agent_run", runId);
     if (!["RUNNING", "WAITING_APPROVAL", "WAITING_DECISION"].includes(run.status)) {
       throw new Error(`[orchestrator/cancel] run '${runId}' in status ${run.status} cannot be cancelled`);
     }

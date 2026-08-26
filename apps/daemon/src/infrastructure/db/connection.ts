@@ -19,6 +19,16 @@ export function openDatabase(cfg: DbConfig): DatabaseSync {
   return db;
 }
 
+/** Graceful-shutdown DB close (§25): checkpoint WAL into the main file so the
+ * on-disk artifact is self-contained and restart-safe, then close cleanly. */
+export function closeDatabase(db: DatabaseSync): void {
+  try {
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+  } finally {
+    db.close();
+  }
+}
+
 function migrate(db: DatabaseSync): void {
   // Append-only audit stream. Timeline/replay derives exclusively from here.
   db.exec(`

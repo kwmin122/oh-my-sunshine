@@ -10,11 +10,16 @@ export function TaskBoard({ projectId, onChanged }: { projectId: string; onChang
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [runtimes, setRuntimes] = useState<Array<{ id: string; label: string; available: boolean }>>([]);
+  const [activeRuns, setActiveRuns] = useState<Array<{ id: string; taskId: string | null; status: string; runtime: string }>>([]);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelResult, setCancelResult] = useState<string | null>(null);
 
   const load = async (): Promise<void> => {
     const r = await api.get<{ tasks: TaskDTO[] }>(`/api/projects/${projectId}/tasks`);
     setTasks(r.tasks);
     setSelectedId((cur) => cur ?? r.tasks[0]?.id ?? null);
+    const runs = await api.get<{ runs: Array<{ id: string; taskId: string | null; status: string; runtime: string }> }>(`/api/projects/${projectId}/runs`).catch(() => ({ runs: [] }));
+    setActiveRuns(runs.runs);
   };
   useEffect(() => { void load(); }, [projectId]);
   useEffect(() => {
@@ -49,6 +54,25 @@ export function TaskBoard({ projectId, onChanged }: { projectId: string; onChang
   const act = async (action: "execute" | "review-complete" | "rerun-verification"): Promise<void> => {
     if (!selectedId) return;
     await runJob(() => api.post(`/api/tasks/${selectedId}/${action}`));
+  };
+
+  const activeRunForSelected = activeRuns.find((r) => r.taskId === selectedId) ?? null;
+
+  const cancelRun = async (): Promise<void> => {
+    if (!activeRunForSelected || !selectedId) return;
+    setCancelling(true);
+    setCancelResult(null);
+    setError(null);
+    try {
+      const res = await api.post<{ run: { status: string; failureReason: string | null } }>(`/api/runs/${activeRunForSelected.id}/cancel`, {});
+      setCancelResult(`Run ${res.run.status}${res.run.failureReason ? ` (${res.run.failureReason})` : ""} — task returned to READY for re-execution.`);
+      await load();
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCancelling(false);
+    }
   };
 
   return (
@@ -111,10 +135,21 @@ export function TaskBoard({ projectId, onChanged }: { projectId: string; onChang
               ))}
             </select>
             <div className="flex flex-wrap gap-2 pt-1">
-              <button className="btn btn-primary" disabled={busy} onClick={() => act("execute")}>Execute with agent</button>
+              <button className="btn btn-primary" disabled={busy || cancelling || Boolean(activeRunForSelected)} onClick={() => act("execute")}>Execute with agent</button>
               <button className="btn" disabled={busy} onClick={() => act("rerun-verification")}>Rerun verification</button>
               <button className="btn" disabled={busy} onClick={() => act("review-complete")}>Review → complete</button>
+              {activeRunForSelected && (
+                <button className="btn border-red-800 text-red-300" disabled={cancelling} onClick={() => void cancelRun()}>
+                  {cancelling ? "Stopping…" : "■ Stop run"}
+                </button>
+              )}
             </div>
+            {activeRunForSelected && (
+              <p className="mono text-amber-300">
+                ● running on {activeRunForSelected.runtime} (attempt {activeRunForSelected.status === "RUNNING" ? "active" : activeRunForSelected.status})
+              </p>
+            )}
+            {cancelResult ? <p className="text-emerald-400">{cancelResult}</p> : null}
             {error ? <p className="text-red-400">{error}</p> : null}
           </div>
         )}

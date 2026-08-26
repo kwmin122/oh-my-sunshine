@@ -4,7 +4,7 @@ import websocket from "@fastify/websocket";
 import type { WebSocket } from "ws";
 import { loadConfig } from "./lib/config.js";
 import { createLogger } from "./lib/logging.js";
-import { openDatabase } from "./infrastructure/db/connection.js";
+import { openDatabase, closeDatabase } from "./infrastructure/db/connection.js";
 import { DocumentRepository } from "./infrastructure/db/document-repository.js";
 import { SqliteEventStore } from "./infrastructure/db/event-store.js";
 import { CliGitAdapter } from "./plugins/tools/core-tools.js";
@@ -278,6 +278,14 @@ async function main(): Promise<void> {
   await app.register(cors, { origin: true });
   await app.register(websocket);
 
+  // Shutdown guard registered before routes: once draining starts, no new runs.
+  let shuttingDown = false;
+  app.addHook("onRequest", async (req, reply) => {
+    if (shuttingDown && req.method === "POST" && !req.url.startsWith("/api/m/")) {
+      await reply.code(503).send({ error: "daemon is shutting down" });
+    }
+  });
+
   const sockets = new Set<WebSocket>();
   app.get("/ws", { websocket: true }, (conn) => {
     sockets.add(conn as unknown as WebSocket);
@@ -339,6 +347,34 @@ async function main(): Promise<void> {
 
   await app.listen({ port: config.httpPort, host: config.httpHost });
   log.info(`DevFlow daemon listening on http://${config.httpHost}:${config.httpPort}`, { provider: providers.getDefault().id, dataDir: config.dataDir });
+
+  // ---- Graceful shutdown (§25): SIGTERM/SIGINT → drain → checkpoint → clean exit ----
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log.info(`graceful shutdown started (${signal})`);
+    try {
+      events.append({ projectId: "system" as never, type: "daemon.shutdown_started" as never, entityType: "system", entityId: null, actorType: "ENGINE", payload: { signal } });
+    } catch { /* best-effort audit */ }
+    // Stop active runtime sessions (SIGTERM→SIGKILL inside adapters), bounded grace.
+    const graceMs = config.shutdownGraceMs;
+    const drain = orchestrator.stopAllActive();
+    const stopped = await Promise.race([drain, new Promise<string[]>((r) => setTimeout(() => r([]), graceMs))]);
+    log.info("active runs drained", { stopped });
+    // Release held edit leases so restarts are not blocked by stale claims.
+    for (const lease of docs.list<{ id: string; status: string }>("edit_lease")) {
+      if (lease.status === "HELD") {
+        try { safeEdit.release(lease.id); } catch { /* keep draining */ }
+      }
+    }
+    // Stop the HTTP server, checkpoint WAL into the main DB file, close cleanly.
+    await app.close().catch(() => undefined);
+    closeDatabase(db);
+    log.info("graceful shutdown complete");
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
 }
 
 main().catch((err) => {

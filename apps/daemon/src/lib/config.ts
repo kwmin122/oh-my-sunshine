@@ -18,6 +18,8 @@ export interface DevFlowConfig {
   providerBackoffMaxMs: number;
   maxRunAttempts: number;
   escalationAfterConsecutiveFailures: number;
+  // Graceful shutdown (§25)
+  shutdownGraceMs: number;
   // Reviews
   findingBlockerConfidenceThreshold: number; // low-confidence findings do not block below this
   // Shell/tool execution safety
@@ -68,6 +70,7 @@ export function loadConfig(overrides: Partial<DevFlowConfig> = {}): DevFlowConfi
     providerBackoffMaxMs: intEnv("DEVFLOW_BACKOFF_MAX_MS", 60_000),
     maxRunAttempts: intEnv("DEVFLOW_MAX_RUN_ATTEMPTS", 3),
     escalationAfterConsecutiveFailures: intEnv("DEVFLOW_ESCALATION_THRESHOLD", 3),
+    shutdownGraceMs: intEnv("DEVFLOW_SHUTDOWN_GRACE_MS", 10_000),
     findingBlockerConfidenceThreshold: floatEnv("DEVFLOW_BLOCKER_CONFIDENCE", 0.6),
     commandTimeoutMs: intEnv("DEVFLOW_CMD_TIMEOUT_MS", 120_000),
     commandOutputLimitBytes: intEnv("DEVFLOW_CMD_OUTPUT_LIMIT", 512_000),

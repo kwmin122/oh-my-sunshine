@@ -44,6 +44,9 @@ export const EVENT_TYPES = [
   "agent.run_cancelled",
   "team.locked_unavailable",
   "routing.rule_applied",
+  // V3: daemon lifecycle (§25)
+  "daemon.shutdown_started",
+  "daemon.shutdown_complete",
   // Actions
   "action.policy_checked",
   "action.approval_requested",

@@ -219,6 +219,17 @@ export function registerRoutes(app: FastifyInstance, deps: {
     }
   });
 
+  /** Active (running) runs for the project — drives the UI Stop buttons. */
+  app.get("/api/projects/:id/runs", async (req) => {
+    const { id } = req.params as { id: string };
+    const runs = deps.docs.list<{ id: string; projectId: string; taskId: string | null; status: string; attempt: number; runtimeConfigId: string }>("agent_run", id);
+    return {
+      runs: runs
+        .filter((r) => ["RUNNING", "WAITING_APPROVAL", "WAITING_DECISION"].includes(r.status))
+        .map((r) => ({ id: r.id, taskId: r.taskId, status: r.status, attempt: r.attempt, runtime: r.runtimeConfigId.replace(/^runtime_/, "") })),
+    };
+  });
+
   app.post("/api/tasks/:taskId/rerun-verification", async (req) => {
     const { taskId } = TaskParam.safeParse(req.params).data ?? {};
     const evidence = await projects.rerunVerification(taskId!);
