@@ -1,0 +1,29 @@
+{
+  "name": "@devflow/daemon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "demo:seed": "tsx src/demo/seed-demo.ts"
+  },
+  "dependencies": {
+    "@devflow/contracts": "workspace:*",
+    "@fastify/cors": "^11.1.0",
+    "@fastify/websocket": "^11.1.0",
+    "fastify": "^5.3.2",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4",
+    "ws": "^8.21.3"
+  }
+}

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.devflow-data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.DS_Store
+**/src-tauri/target/
+
+apps/e2e/test-results/
+playwright-report/
+.devflow-e2e-data/
+.devflow/

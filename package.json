@@ -1,0 +1,18 @@
+{
+  "name": "devflow-os",
+  "private": true,
+  "version": "0.1.0",
+  "description": "DevFlow OS — AI Engineering Control Plane. Local-first desktop app + local orchestration daemon.",
+  "packageManager": "pnpm@10.17.1",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "typecheck": "pnpm -r typecheck",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "dev:daemon": "pnpm --filter @devflow/daemon dev",
+    "dev:desktop": "pnpm --filter @devflow/desktop dev",
+    "demo:seed": "pnpm --filter @devflow/daemon demo:seed"
+  }
+}

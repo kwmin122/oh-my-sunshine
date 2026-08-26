@@ -1,0 +1,105 @@
+/** Event catalog (spec §7). Timeline/replay is derived exclusively from these. */
+export const EVENT_TYPES = [
+  // Project
+  "project.created",
+  "project.repository_attached",
+  "project.scanned",
+  // Mission/requirements
+  "mission.created",
+  "requirement.discovered",
+  "requirement.updated",
+  "requirement.assumption_added",
+  "discovery.question_created",
+  "discovery.answer_received",
+  "discovery.ready",
+  // Research/spec
+  "research.started",
+  "research.completed",
+  "spec.generated",
+  "spec.updated",
+  // Architecture
+  "architecture.generated",
+  "architecture.updated",
+  "adr.created",
+  "adr.decided",
+  // Tasks
+  "task.created",
+  "task.ready",
+  "task.started",
+  "task.blocked",
+  "task.review",
+  "task.completed",
+  // Agent
+  "agent.run_started",
+  "agent.context_compiled",
+  "agent.action_requested",
+  "agent.action_completed",
+  "agent.escalated",
+  "agent.run_completed",
+  // Actions
+  "action.policy_checked",
+  "action.approval_requested",
+  "action.approved",
+  "action.denied",
+  "action.executed",
+  "action.failed",
+  // Verification
+  "verification.started",
+  "verification.passed",
+  "verification.failed",
+  "evidence.created",
+  "evidence.stale",
+  // Reviews
+  "review.started",
+  "review.blocked",
+  "review.passed",
+  // Release
+  "release.ready",
+  "release.approved",
+  "release.completed",
+  // Workflow/runtime
+  "workflow.created",
+  "workflow.node_entered",
+  "workflow.node_completed",
+  "workflow.split_selected",
+  "workflow.delegated",
+  "workflow.resumed",
+  "session.created",
+  "session.progressed",
+  "session.stalled",
+  "session.restarted",
+  "session.closed",
+  "provider.degraded",
+  "provider.recovered",
+  // Readiness/memory/conflicts
+  "system.readiness_checked",
+  "system.capability_missing",
+  "memory.observed",
+  "memory.confirmed",
+  "memory.promoted",
+  "conflict.detected",
+  "conflict.resolved",
+  "recommendation.created",
+  "recommendation.dismissed",
+  // V2: intent / code intelligence / safe edit / drift
+  "intent.classified",
+  "symbol.indexed",
+  "edit.stale_rejected",
+  "edit.applied",
+  "drift.detected",
+  "drift.resolved",
+  // V2: capacity / routing / playbooks
+  "provider.capacity_refreshed",
+  "provider.capacity_low",
+  "routing.recommended",
+  "routing.changed",
+  "playbook.observed",
+  "playbook.promoted",
+  // V2: mobile
+  "mobile.device_paired",
+  "mobile.device_revoked",
+  "mobile.message_received",
+  "mobile.notification_sent",
+] as const;
+
+export type DevFlowEventType = (typeof EVENT_TYPES)[number];

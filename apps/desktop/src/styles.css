@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-neutral-950 text-neutral-200 antialiased;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.panel {
+  @apply rounded-lg border border-neutral-800 bg-neutral-900/60;
+}
+
+.chip {
+  @apply inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium;
+}
+
+.btn {
+  @apply rounded-md border border-neutral-700 bg-neutral-800 px-3 py-1.5 text-sm font-medium text-neutral-100 transition hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40;
+}
+
+.btn-primary {
+  @apply border-sky-600 bg-sky-600 hover:bg-sky-500;
+}
+
+.btn-danger {
+  @apply border-red-800 bg-red-900/60 hover:bg-red-800;
+}
+
+.input {
+  @apply w-full rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-sky-600;
+}
+
+.status-running { @apply text-emerald-400; }
+.status-blocked { @apply text-red-400; }
+.status-waiting { @apply text-amber-400; }
+.status-done { @apply text-sky-400; }
+.status-idle { @apply text-neutral-500; }
