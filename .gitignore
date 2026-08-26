@@ -12,3 +12,4 @@ apps/e2e/test-results/
 playwright-report/
 .devflow-e2e-data/
 .devflow/
+apps/desktop/src-tauri/binaries/
