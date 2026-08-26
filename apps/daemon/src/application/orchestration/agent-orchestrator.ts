@@ -71,7 +71,10 @@ export class AgentOrchestrator {
     }
 
     // AI Team Composer: nearest override wins; unavailable runtimes degrade along fallbacks.
-    const resolved = this.ports.composer?.resolveForTask(task.projectId, task.id, task.ownerRole) ?? null;
+    // Run override (nearest wins): an explicit caller-provided runtime beats role/task layers,
+      // but LOCKED bindings still veto auto-substitution downstream.
+      const runOverride = runtimeAdapterId !== "mock-runtime" ? { runtimeId: runtimeAdapterId } : undefined;
+      const resolved = this.ports.composer?.resolveForTask(task.projectId, task.id, task.ownerRole, runOverride) ?? null;
     let effectiveAdapter = runtimeAdapterId;
     let modelHint: RuntimeStartInput["modelHint"] | undefined;
     if (resolved) {

@@ -190,8 +190,9 @@ export function registerRoutes(app: FastifyInstance, deps: {
   app.post("/api/tasks/:taskId/execute", async (req, reply) => {
     const { taskId } = TaskParam.safeParse(req.params).data ?? {};
     if (!taskId) return reply.code(400).send({ error: "bad task id" });
+    const body = z.object({ runtimeId: z.string().min(1).optional() }).safeParse(req.body ?? {});
     try {
-      const run = await projects.executeTask(taskId);
+      const run = await projects.executeTask(taskId, body.success ? body.data.runtimeId : undefined);
       return { run };
     } catch (err) {
       return reply.code(409).send({ error: err instanceof Error ? err.message : String(err) });
