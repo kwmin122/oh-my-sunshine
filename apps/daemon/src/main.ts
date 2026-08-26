@@ -13,7 +13,8 @@ import { ModelProviderRegistry } from "./plugins/models/model-provider-registry.
 import { buildCompletenessModelPort } from "./plugins/models/completeness-model-port.js";
 import { AgentRuntimeRegistry } from "./plugins/runtimes/runtime-registry.js";
 import { TeamComposerService, buildCatalog } from "./application/team/team-composer-service.js";
-import { execFileSync } from "node:child_process";
+import { discoverRuntimes, applyDiscoveryToCatalog, type DiscoveredRuntime } from "./services/discovery/runtime-discovery.js";
+
 import { PresetPolicyEngine } from "./domain/policy/preset-policy-engine.js";
 import { ActionGateway } from "./application/gateway/action-gateway.js";
 import { buildDeliveryWorkflowDefinition } from "./domain/workflow/delivery-definition.js";
@@ -95,16 +96,15 @@ async function main(): Promise<void> {
   const verification = new VerificationService(docs, events, gateway, git);
   const freshness = new EvidenceFreshnessService(docs, events);
 
+  // Runtime Discovery (§32): catalog availability reflects what is actually installed.
+  let discovered: DiscoveredRuntime[] = [];
   const composer = new TeamComposerService({ docs, events }, () =>
-    buildCatalog((bin) => {
-      try {
-        execFileSync("which", [bin], { stdio: "ignore" });
-        return true;
-      } catch {
-        return false;
-      }
-    }),
+    applyDiscoveryToCatalog(buildCatalog(() => false), discovered),
   );
+  void discoverRuntimes().then((d) => {
+    discovered = d;
+    log.info("runtime discovery complete", { runtimes: d.filter((x) => x.binaryPath).map((x) => x.id) });
+  }).catch(() => undefined);
 
   const orchestrator = new AgentOrchestrator(
     {
@@ -256,6 +256,11 @@ async function main(): Promise<void> {
     for (const socket of sockets) {
       if (socket.readyState === 1) socket.send(JSON.stringify(event));
     }
+  });
+
+  app.get("/api/runtimes/discover", async () => {
+    discovered = await discoverRuntimes();
+    return { runtimes: discovered, catalog: composer.catalog() };
   });
 
   registerRoutes(app, {
