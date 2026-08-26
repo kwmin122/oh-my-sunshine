@@ -36,6 +36,14 @@ export const EVENT_TYPES = [
   "agent.action_completed",
   "agent.escalated",
   "agent.run_completed",
+  // V3: runtime execution stream / routing / handoff
+  "runtime.selected",
+  "agent.run_output",
+  "agent.handoff_generated",
+  "agent.handoff_consumed",
+  "agent.run_cancelled",
+  "team.locked_unavailable",
+  "routing.rule_applied",
   // Actions
   "action.policy_checked",
   "action.approval_requested",

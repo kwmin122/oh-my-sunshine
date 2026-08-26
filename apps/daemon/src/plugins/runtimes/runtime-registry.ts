@@ -1,13 +1,19 @@
-import type { AgentRuntimeAdapter } from "@devflow/contracts";
+import type { AgentRuntimeAdapter, NormalizedRuntimeEvent } from "@devflow/contracts";
 import { MockAgentRuntimeAdapter } from "./mock-runtime.js";
-import { CliAgentRuntimeAdapter } from "./cli-runtime-adapter.js";
+import { CliAgentRuntimeAdapter, type CliAdapterKind } from "./cli-runtime-adapter.js";
 
 /** Agent runtime registry (spec §14.6). Vendor adapters plug in; core stays neutral. */
 export class AgentRuntimeRegistry {
   private readonly adapters = new Map<string, AgentRuntimeAdapter>();
+  private eventSink: ((event: NormalizedRuntimeEvent) => void) | null = null;
 
   constructor() {
     this.register(new MockAgentRuntimeAdapter());
+  }
+
+  /** Normalized runtime events (V3 §15) flow here — main() wires this to the EventStore. */
+  setEventSink(sink: (event: NormalizedRuntimeEvent) => void): void {
+    this.eventSink = sink;
   }
 
   register(adapter: AgentRuntimeAdapter): void {
@@ -30,11 +36,12 @@ export class AgentRuntimeRegistry {
     return [...this.adapters.keys()];
   }
 
-  /** §33: attach executable adapters for CLIs discovered on this machine. */
-  registerCliIfAvailable(id: string, bin: string, buildArgs: CliArgsBuilder, exists: boolean): void {
+  /** §33/V3-S1: attach an executable adapter for a CLI discovered on this machine. */
+  registerCliIfAvailable(id: string, bin: string, kind: CliAdapterKind, exists: boolean): void {
     if (!exists || this.adapters.has(id)) return;
-    this.adapters.set(id, new CliAgentRuntimeAdapter({ id, bin, buildArgs }));
+    this.adapters.set(
+      id,
+      new CliAgentRuntimeAdapter({ id, bin, kind, onEvent: (e) => this.eventSink?.(e) }),
+    );
   }
 }
-
-type CliArgsBuilder = (opts: { promptFile: string; model?: string | null; effort?: string | null }) => string[];

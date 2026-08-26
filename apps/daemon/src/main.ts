@@ -101,15 +101,36 @@ async function main(): Promise<void> {
   const composer = new TeamComposerService({ docs, events }, () =>
     applyDiscoveryToCatalog(buildCatalog(() => false), discovered),
   );
+  // Normalized runtime event stream (V3 §15) → EventStore as agent.run_output.
+  runtimes.setEventSink((e) => {
+    try {
+      const owner = docs.get<{ projectId: string }>("agent_run", e.runId);
+      if (!owner) return; // run not yet persisted — nothing to attribute to
+      events.append({
+        projectId: owner.projectId as never,
+        type: "agent.run_output" as never,
+        entityType: "run",
+        entityId: e.runId,
+        actorType: "ENGINE",
+        payload: {
+          taskId: e.taskId,
+          kind: e.kind,
+          text: e.text ?? null,
+          tool: e.tool ?? null,
+          meta: e.meta ?? null,
+          at: e.at,
+        },
+      });
+    } catch (err) {
+      log.warn("runtime event sink failed", { error: err instanceof Error ? err.message : String(err) });
+    }
+  });
   void discoverRuntimes().then(async (d) => {
     discovered = d;
     const found = new Map(d.filter((x) => x.binaryPath).map((x) => [x.id, true]));
-    runtimes.registerCliIfAvailable("claude-code", "claude", ({ model }) =>
-      ["-p", "--output-format", "text", ...(model ? ["--model", model] : [])], found.has("claude-code"));
-    runtimes.registerCliIfAvailable("codex-cli", "codex", ({ model, effort }) =>
-      ["exec", "--json", ...(model ? ["--model", model] : []), ...(effort ? ["-c", `model_reasoning_effort=${effort.toLowerCase()}`] : [])], found.has("codex-cli"));
-    runtimes.registerCliIfAvailable("opencode", "opencode", ({ model }) =>
-      ["run", ...(model ? ["--model", model] : [])], found.has("opencode"));
+    runtimes.registerCliIfAvailable("claude-code", "claude", "claude-code", found.has("claude-code"));
+    runtimes.registerCliIfAvailable("codex-cli", "codex", "codex-cli", found.has("codex-cli"));
+    runtimes.registerCliIfAvailable("opencode", "opencode", "opencode", found.has("opencode"));
     log.info("runtime discovery complete", { runtimes: d.filter((x) => x.binaryPath).map((x) => x.id), registered: runtimes.listIds() });
   }).catch(() => undefined);
 

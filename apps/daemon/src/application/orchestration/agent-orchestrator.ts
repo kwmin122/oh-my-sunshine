@@ -33,6 +33,7 @@ export interface OrchestratorPorts {
   /** AI Team Composer (spec §31): resolves role→runtime→model with fallbacks. */
   composer?: {
     resolveForTask(projectId: string, taskId: string, ownerRoleId: string | null, runOverride?: { runtimeId: string }): ResolvedRuntime | null;
+    resolveDetailed?(projectId: string, taskId: string, ownerRoleId: string | null, runOverride?: { runtimeId: string }): { runtime: ResolvedRuntime | null; lockedUnavailableRuntimeId?: string };
     listRuntimeIds(): string[];
   };
   tools: ToolRegistry;
@@ -72,11 +73,32 @@ export class AgentOrchestrator {
 
     // AI Team Composer: nearest override wins; unavailable runtimes degrade along fallbacks.
     // Run override (nearest wins): an explicit caller-provided runtime beats role/task layers,
-      // but LOCKED bindings still veto auto-substitution downstream.
-      const runOverride = runtimeAdapterId !== "mock-runtime" ? { runtimeId: runtimeAdapterId } : undefined;
-      const resolved = this.ports.composer?.resolveForTask(task.projectId, task.id, task.ownerRole, runOverride) ?? null;
+    // but LOCKED bindings still veto auto-substitution downstream.
+    const runOverride = runtimeAdapterId !== "mock-runtime" ? { runtimeId: runtimeAdapterId } : undefined;
+    const resolution = this.ports.composer?.resolveDetailed
+      ? this.ports.composer.resolveDetailed(task.projectId, task.id, task.ownerRole, runOverride)
+      : { runtime: this.ports.composer?.resolveForTask(task.projectId, task.id, task.ownerRole, runOverride) ?? null };
+    const resolved = resolution.runtime;
     let effectiveAdapter = runtimeAdapterId;
     let modelHint: RuntimeStartInput["modelHint"] | undefined;
+    if (!resolved && resolution.lockedUnavailableRuntimeId) {
+      // LOCKED + unavailable (§V3-4): fail closed — no silent mock substitution.
+      const now0 = new Date().toISOString();
+      this.emit(task.projectId, "team.locked_unavailable", task.id, {
+        roleId: task.ownerRole,
+        lockedRuntime: resolution.lockedUnavailableRuntimeId,
+      });
+      const blockedTask: TaskContract = {
+        ...task,
+        status: "BLOCKED",
+        blockers: [`LOCKED runtime '${resolution.lockedUnavailableRuntimeId}' unavailable — keep / switch once / change policy`],
+        updatedAt: now0,
+      };
+      this.ports.docs.put("task", blockedTask.id, blockedTask.projectId, blockedTask);
+      throw new Error(
+        `[orchestrator/start] LOCKED runtime '${resolution.lockedUnavailableRuntimeId}' is unavailable for role ${task.ownerRole} — refusing auto-substitution`,
+      );
+    }
     if (resolved) {
       const registered = this.ports.composer?.listRuntimeIds().includes(resolved.runtimeId) ?? false;
       if (!registered && resolved.runtimeId !== "mock-runtime") {
@@ -90,6 +112,15 @@ export class AgentOrchestrator {
         effectiveAdapter = resolved.runtimeId;
       }
       modelHint = { providerId: resolved.providerId, model: resolved.model, effort: resolved.effort };
+      this.emit(task.projectId, "runtime.selected", task.id, {
+        runId: null,
+        runtimeId: effectiveAdapter,
+        requested: resolved.requestedRuntimeId,
+        chain: resolved.chain,
+        fallbackUsed: resolved.fallbackUsed,
+        model: resolved.model,
+        effort: resolved.effort,
+      });
     }
 
     const now = new Date().toISOString();
@@ -97,7 +128,9 @@ export class AgentOrchestrator {
       id: newId("run"),
       projectId: task.projectId,
       agentRoleId: task.ownerRole,
-      runtimeConfigId: `runtime_${runtimeAdapterId}`,
+      // Record the adapter that will ACTUALLY execute (post-composer resolution),
+      // so cancellation/resume reach the real runtime — not the caller's default.
+      runtimeConfigId: `runtime_${effectiveAdapter}`,
       sessionId: null,
       taskId: task.id,
       status: "RUNNING",
@@ -190,8 +223,6 @@ export class AgentOrchestrator {
       stallThresholdMs: this.ports.config.stallThresholdMs,
     };
     this.ports.docs.put("agent_session", session.id, task.projectId, session);
-    run = { ...run, sessionId: session.id };
-    this.ports.docs.put("agent_run", run.id, run.projectId, run);
     this.emit(task.projectId, "session.created", session.id, { class: session.sessionClass });
     this.emit(task.projectId, "agent.run_started", task.id, { runId: run.id, attempt: run.attempt, runtime: runtimeAdapterId });
 
@@ -203,6 +234,10 @@ export class AgentOrchestrator {
       workingDirectory: workspaceRoot,
       modelHint,
     });
+    // run.sessionId carries the RUNTIME session handle — cancellation must reach
+    // the actual child process, not a document id (S1 regression evidence).
+    run = { ...run, sessionId: handle.sessionId };
+    this.ports.docs.put("agent_run", run.id, run.projectId, run);
 
     let observation = initialObservation ?? "run started";
     let consecutiveProviderFailures = 0;
@@ -215,6 +250,13 @@ export class AgentOrchestrator {
         backoffMs = this.ports.config.providerBackoffInitialMs;
         consecutiveProviderFailures = 0;
       } catch (err) {
+        // Fatal provider states (cancel/auth/runtime-missing) are never retried (§16).
+        if ((err as { providerFatal?: boolean }).providerFatal) {
+          // A concurrent user cancel may have already finalized this run — never overwrite it.
+          const current = this.ports.docs.get<AgentRun>("agent_run", run.id);
+          if (current && ["FAILED", "SUCCEEDED", "CANCELLED"].includes(current.status)) return current;
+          return this.finishFailed(run, session, task, err instanceof Error ? err.message : String(err));
+        }
         // Provider-plane failure ≠ implementation failure: backoff, then retry within bounds.
         consecutiveProviderFailures++;
         this.emit(task.projectId, "provider.degraded", session.id, {
@@ -372,6 +414,15 @@ export class AgentOrchestrator {
     session.liveness = "FAILED";
     session.endedAt = now;
     this.ports.docs.put("agent_session", session.id, run.projectId, session);
+
+    // User cancellation (§39) is never an implementation failure — it must not
+    // consume the escalation budget; the task simply returns to READY.
+    if (reason.includes("/CANCELLED]") || reason === "CANCELLED_BY_USER") {
+      this.emit(run.projectId, "agent.run_cancelled", task.id, { runId: run.id });
+      const retryable: TaskContract = { ...task, status: "READY", updatedAt: now };
+      this.ports.docs.put("task", retryable.id, retryable.projectId, retryable);
+      return run;
+    }
 
     const totalFailures = this.ports.docs
       .list<AgentRun>("agent_run", run.projectId)

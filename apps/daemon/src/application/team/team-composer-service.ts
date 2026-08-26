@@ -281,6 +281,20 @@ export class TeamComposerService {
    * fallbacks of whichever applies. Nearest wins; unavailable runtimes fall back.
    */
   resolveForTask(projectId: string, taskId: string, ownerRoleId: string | null, runOverride?: Partial<TaskRuntimeOverride>): ResolvedRuntime | null {
+    return this.resolveDetailed(projectId, taskId, ownerRoleId, runOverride).runtime;
+  }
+
+  /**
+   * Rich resolution used by the orchestrator (V3 §4): distinguishes "nothing
+   * composed" from "LOCKED runtime unavailable" so LOCKED can fail closed
+   * instead of silently degrading to the mock runtime.
+   */
+  resolveDetailed(
+    projectId: string,
+    taskId: string,
+    ownerRoleId: string | null,
+    runOverride?: Partial<TaskRuntimeOverride>,
+  ): { runtime: ResolvedRuntime | null; lockedUnavailableRuntimeId?: string } {
     const catalog = this.catalog();
     const usable = (id: string): boolean => catalog.find((r) => r.id === id)?.available === true;
     const toResolved = (
@@ -317,16 +331,20 @@ export class TeamComposerService {
     const preset = binding?.permissionPreset ?? "WORKSPACE";
 
     if (effOv) {
-      return toResolved(effOv.runtimeId, effOv, preset, binding?.fallbacks ?? [], "task-override");
+      return { runtime: toResolved(effOv.runtimeId, effOv, preset, binding?.fallbacks ?? [], "task-override") };
     }
     if (projectBinding) {
-      return toResolved(projectBinding.runtimeId, projectBinding, preset, projectBinding.fallbacks, "role-binding", projectBinding.routingMode ?? "AUTO");
+      const runtime = toResolved(projectBinding.runtimeId, projectBinding, preset, projectBinding.fallbacks, "role-binding", projectBinding.routingMode ?? "AUTO");
+      if (!runtime && projectBinding.routingMode === "LOCKED") return { runtime: null, lockedUnavailableRuntimeId: projectBinding.runtimeId };
+      return { runtime };
     }
     if (orgBinding) {
-      return toResolved(orgBinding.runtimeId, orgBinding, orgBinding.permissionPreset ?? "WORKSPACE", orgBinding.fallbacks, "org-default", orgBinding.routingMode ?? "AUTO");
+      const runtime = toResolved(orgBinding.runtimeId, orgBinding, orgBinding.permissionPreset ?? "WORKSPACE", orgBinding.fallbacks, "org-default", orgBinding.routingMode ?? "AUTO");
+      if (!runtime && orgBinding.routingMode === "LOCKED") return { runtime: null, lockedUnavailableRuntimeId: orgBinding.runtimeId };
+      return { runtime };
     }
     // Nothing composed — engine default keeps work unblocked.
-    return toResolved("mock-runtime", { runtimeId: "mock-runtime" }, preset, [], "engine-default");
+    return { runtime: toResolved("mock-runtime", { runtimeId: "mock-runtime" }, preset, [], "engine-default") };
   }
 
   private emit(projectId: string, type: string, entityId: string | null, payload: Record<string, unknown>): void {
