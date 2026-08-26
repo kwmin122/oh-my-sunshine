@@ -101,9 +101,16 @@ async function main(): Promise<void> {
   const composer = new TeamComposerService({ docs, events }, () =>
     applyDiscoveryToCatalog(buildCatalog(() => false), discovered),
   );
-  void discoverRuntimes().then((d) => {
+  void discoverRuntimes().then(async (d) => {
     discovered = d;
-    log.info("runtime discovery complete", { runtimes: d.filter((x) => x.binaryPath).map((x) => x.id) });
+    const found = new Map(d.filter((x) => x.binaryPath).map((x) => [x.id, true]));
+    runtimes.registerCliIfAvailable("claude-code", "claude", ({ model }) =>
+      ["-p", "--output-format", "text", ...(model ? ["--model", model] : [])], found.has("claude-code"));
+    runtimes.registerCliIfAvailable("codex-cli", "codex", ({ model, effort }) =>
+      ["exec", "--json", ...(model ? ["--model", model] : []), ...(effort ? ["-c", `model_reasoning_effort=${effort.toLowerCase()}`] : [])], found.has("codex-cli"));
+    runtimes.registerCliIfAvailable("opencode", "opencode", ({ model }) =>
+      ["run", ...(model ? ["--model", model] : [])], found.has("opencode"));
+    log.info("runtime discovery complete", { runtimes: d.filter((x) => x.binaryPath).map((x) => x.id), registered: runtimes.listIds() });
   }).catch(() => undefined);
 
   const orchestrator = new AgentOrchestrator(
