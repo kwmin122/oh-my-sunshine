@@ -61,9 +61,12 @@ export function registerRoutes(app: FastifyInstance, deps: {
     listTree(projectId: string, subpath?: string): Promise<{ path: string; entries: Array<{ name: string; path: string; type: "file" | "dir"; size: number | null; gitStatus: string | null }> }>;
     readFile(projectId: string, filePath: string): Promise<{ path: string; content: string; truncated: boolean; sizeBytes: number; revision: string | null }>;
     searchFiles(projectId: string, query: string, limit?: number): Promise<Array<{ name: string; path: string; type: "file" | "dir"; size: number | null; gitStatus: string | null }>>;
+    searchContents(projectId: string, query: string, opts?: { maxResults?: number; maxScanBytes?: number }): Array<{ path: string; line: number; preview: string }>;
     diff(projectId: string, base?: string | null): Promise<{ base: string; diff: string }>;
     statusSummary(projectId: string): Promise<{ revision: string | null; changedFiles: Array<{ path: string; status: string }> }>;
     fileHistory(projectId: string, filePath: string, limit?: number): Promise<Array<{ hash: string; subject: string; author: string; date: string }>>;
+    fileProvenance(projectId: string, filePath: string): { runId: string | null; taskId: string | null; at: string | null; actionSummary: string | null };
+    watchProject(projectId: string, onChange: (event: { type: "file.changed"; path: string | null }) => void): (() => void) | null;
   };
   terminals?: {
     list(projectId?: string): Array<{ id: string; projectId: string; type: string; status: string; pid: number | null; startedAt: string }>;
@@ -71,6 +74,7 @@ export function registerRoutes(app: FastifyInstance, deps: {
     create(projectId: string, type: "USER" | "AGENT" | "TEST" | "BUILD", cwd: string): { id: string; status: string };
     write(id: string, data: string): boolean;
     kill(id: string): boolean;
+    resize(id: string, cols: number, rows: number): boolean;
     outputSince(id: string, afterSeq: number): { chunks: Array<{ seq: number; data: string; stream: string }>; latestSeq: number };
   };
   conversation?: {
@@ -80,6 +84,7 @@ export function registerRoutes(app: FastifyInstance, deps: {
   contract?: {
     refresh(projectId: string): Promise<unknown>;
     get(projectId: string): unknown | null;
+    toMarkdown(contract: { sections: Array<{ title: string }>; projectId: string; createdAt: string; readiness: unknown; openQuestions: unknown[] }): string;
   };
   tools: { get(id: string): { execute(input: Record<string, unknown>, ctx: { workspaceRoot: string }): Promise<{ ok: boolean; summary: string; output: string | null }> } };
 }): void {
@@ -685,7 +690,22 @@ export function registerRoutes(app: FastifyInstance, deps: {
     if (!deps.workspace) return reply.code(501).send({ error: "workspace unavailable" });
     const q = (req.query as { q?: string }).q ?? "";
     try {
+      if ((req.query as { mode?: string }).mode === "content") {
+        return { results: deps.workspace.searchContents(id, q) };
+      }
       return { results: await deps.workspace.searchFiles(id, q) };
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.get("/api/projects/:id/file/provenance", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!deps.workspace) return reply.code(501).send({ error: "workspace unavailable" });
+    const path = (req.query as { path?: string }).path ?? "";
+    if (!path) return reply.code(400).send({ error: "path required" });
+    try {
+      return deps.workspace.fileProvenance(id, path);
     } catch (err) {
       return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -755,6 +775,21 @@ export function registerRoutes(app: FastifyInstance, deps: {
     return ok ? { killed: true } : reply.code(404).send({ error: "unknown terminal" });
   });
 
+  app.get("/api/projects/:id/terminals", async (req) => {
+    const { id } = req.params as { id: string };
+    if (!deps.terminals) return { sessions: [] };
+    return { sessions: deps.terminals.list(id) };
+  });
+
+  app.post("/api/terminal/:termId/resize", async (req, reply) => {
+    const { termId } = req.params as { termId: string };
+    if (!deps.terminals) return reply.code(501).send({ error: "terminal unavailable" });
+    const body = z.object({ cols: z.number().int().min(20).max(500), rows: z.number().int().min(5).max(200) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid input" });
+    const ok = deps.terminals.resize(termId, body.data.cols, body.data.rows);
+    return ok ? { resized: true } : reply.code(409).send({ error: "resize unsupported for this terminal" });
+  });
+
   app.get("/api/terminal/:termId/output", async (req, reply) => {
     const { termId } = req.params as { termId: string };
     if (!deps.terminals) return reply.code(501).send({ error: "terminal unavailable" });
@@ -797,6 +832,16 @@ export function registerRoutes(app: FastifyInstance, deps: {
     } catch (err) {
       return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  app.get("/api/projects/:id/contract/export", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!deps.contract) return reply.code(501).send({ error: "contract service unavailable" });
+    const existing = deps.contract.get(id);
+    if (!existing) return reply.code(404).send({ error: "contract not compiled yet — refresh first" });
+    reply.header("content-type", "text/markdown; charset=utf-8");
+    reply.header("content-disposition", `attachment; filename="PRE_IMPLEMENTATION_CONTRACT.md"`);
+    return deps.contract.toMarkdown(existing as never);
   });
 
   // ---- Safe edit demo/test seam ----

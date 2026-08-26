@@ -59,6 +59,8 @@ export interface ProjectServicePorts {
   git: GitAdapter;
   /** Workflow Composer (V3 §18/S4): an applied user workflow drives planning. */
   workflowComposer?: { activeWorkflowFor(projectId: string): import("@devflow/contracts").WorkflowDefinition | null };
+  /** V5/S11 Implementation Readiness Gate — enforced when the operator flag is on. */
+  contractGate?: { isReady(projectId: string): boolean | null; topQuestion(projectId: string): string | null };
   roles(): AgentRole[];
   scanner: { scan(path: string): Promise<CodebaseSnapshot> };
   tools: { get(id: string): { execute(input: Record<string, unknown>, ctx: { workspaceRoot: string }): Promise<{ ok: boolean; summary: string; output: string | null }> } };
@@ -293,6 +295,16 @@ export class ProjectService {
         throw new Error(
           `[project-service/plan] Definition of Ready not met: ${readiness.missingForReady.join("; ")}`,
         );
+      }
+      // Implementation Readiness Gate (V5/S11) — separate from DoR; active when
+      // the operator opts in (DEVFLOW_REQUIRE_IMPL_CONTRACT=1 wiring in main.ts).
+      if (this.p.contractGate) {
+        const contractReady = this.p.contractGate.isReady(projectId as string);
+        if (contractReady === false) {
+          throw new Error(
+            `[project-service/plan] Implementation Contract not ready — ${this.p.contractGate.topQuestion(projectId as string) ?? "resolve blocking gaps first"}`,
+          );
+        }
       }
     }
     const mission = this.latestMission(projectId);

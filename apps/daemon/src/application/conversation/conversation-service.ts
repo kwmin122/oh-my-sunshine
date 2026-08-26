@@ -17,6 +17,11 @@ export interface ConversationPorts {
   events: EventStore;
   /** Optional LLM tier for Lead replies; falls back to a deterministic answer. */
   provider?: ModelProvider;
+  /** V4 §8: RUNTIME_CHANGE messages apply the task override directly. */
+  composer?: {
+    setTaskOverride(projectId: string, override: { taskId: string; roleId: string | null; runtimeId: string; reason?: string | null; updatedAt: string }): unknown;
+    catalog(): Array<{ id: string; label: string }>;
+  };
 }
 
 /** ASCII alternatives can use \b; CJK has no word boundaries in JS regex —
@@ -145,6 +150,29 @@ export class ConversationService {
           });
         this.emit(projectId, "requirement.change_detected", null, { messageId: message.id, affectedTasks: tasks.length, text: message.text.slice(0, 300) });
         effects.push(`${tasks.length} task(s) flagged for replan; fresh evidence marked stale`);
+        break;
+      }
+      case "RUNTIME_CHANGE": {
+        // Structured runtime switch (V3 §43): "codex로 바꿔줘" pins the active
+        // task's next run to that runtime via the standard override mechanism.
+        const match = message.text.match(/(claude|codex|opencode)/i);
+        const target = match?.[1]?.toLowerCase() === "claude" ? "claude-code" : match?.[1]?.toLowerCase();
+        if (target && this.ports.composer) {
+          const known = this.ports.composer.catalog().find((c) => c.id.includes(target));
+          const task = this.latestActionableTask(projectId);
+          if (known && task) {
+            this.ports.composer.setTaskOverride(projectId, {
+              taskId: task.id, roleId: null, runtimeId: known.id,
+              reason: `operator runtime switch: ${message.text.slice(0, 120)}`, updatedAt: new Date().toISOString(),
+            });
+            this.emit(projectId, "runtime.selected", task.id, { source: "conversation", runtimeId: known.id });
+            effects.push(`next run of ${task.stableKey} pinned to ${known.label}`);
+          } else if (!task) {
+            effects.push("no active task to re-pin — recorded");
+          } else {
+            effects.push(`runtime '${target}' unknown in catalog — nothing changed`);
+          }
+        }
         break;
       }
       default:

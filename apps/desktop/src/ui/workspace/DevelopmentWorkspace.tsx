@@ -24,6 +24,7 @@ export function DevelopmentWorkspace({ projectId }: { projectId: string }): JSX.
   const [changedFiles, setChangedFiles] = useState<Array<{ path: string; status: string }>>([]);
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState<Entry[] | null>(null);
+  const [searchContent, setSearchContent] = useState<Array<{ path: string; line: number; preview: string }> | null>(null);
 
   const loadTree = useCallback(async (): Promise<void> => {
     try {
@@ -68,8 +69,18 @@ export function DevelopmentWorkspace({ projectId }: { projectId: string }): JSX.
 
   const runSearch = async (): Promise<void> => {
     if (search.trim().length === 0) { setSearchResults(null); return; }
+    if (search.startsWith("?")) {
+      // "?query" greps file CONTENTS; plain text searches filenames.
+      const r = await api.get<{ results: Array<{ path: string; line: number; preview: string }> }>(
+        `/api/projects/${projectId}/files/search?mode=content&q=${encodeURIComponent(search.slice(1))}`,
+      );
+      setSearchContent(r.results);
+      setSearchResults(null);
+      return;
+    }
     const r = await api.get<{ results: Entry[] }>(`/api/projects/${projectId}/files/search?q=${encodeURIComponent(search)}`);
     setSearchResults(r.results);
+    setSearchContent(null);
   };
 
   const renderEntries = (entries: Entry[], depth: number): JSX.Element[] =>
@@ -94,16 +105,27 @@ export function DevelopmentWorkspace({ projectId }: { projectId: string }): JSX.
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[240px_1fr_320px]">
         {/* LEFT: explorer */}
         <Panel title="FILES">
-          <input className="input mb-2 py-0.5 text-xs" placeholder="search files…" value={search}
+          <input className="input mb-2 py-0.5 text-xs" placeholder='search files ("?text" greps contents)' value={search}
             onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void runSearch()} />
           {searchResults ? (
             <div className="space-y-0.5">
-              <button className="mono w-full rounded px-1 py-0.5 text-left text-[10px] text-sky-400 hover:bg-neutral-800" onClick={() => { setSearchResults(null); setSearch(""); }}>← back to tree</button>
+              <button className="mono w-full rounded px-1 py-0.5 text-left text-[10px] text-sky-400 hover:bg-neutral-800" onClick={() => { setSearchResults(null); setSearchContent(null); setSearch(""); }}>← back to tree</button>
               {searchResults.map((r) => (
                 <button key={r.path} className="block w-full truncate rounded px-1.5 py-0.5 text-left text-xs text-neutral-300 hover:bg-neutral-800/60"
                   onClick={() => void openFile(r.path)}>{r.path}</button>
               ))}
               {searchResults.length === 0 && <Empty>No matches.</Empty>}
+            </div>
+          ) : searchContent ? (
+            <div className="space-y-1">
+              <button className="mono w-full rounded px-1 py-0.5 text-left text-[10px] text-sky-400 hover:bg-neutral-800" onClick={() => { setSearchContent(null); setSearch(""); }}>← back to tree</button>
+              {searchContent.map((h, i) => (
+                <button key={i} className="block w-full rounded px-1 py-0.5 text-left hover:bg-neutral-800/60" onClick={() => void openFile(h.path)}>
+                  <span className="mono block truncate text-[9px] text-sky-500">{h.path}:{h.line}</span>
+                  <span className="mono block truncate text-[10px] text-neutral-300">{h.preview}</span>
+                </button>
+              ))}
+              {searchContent.length === 0 && <Empty>No content matches — prefix with ? to grep contents.</Empty>}
             </div>
           ) : tree.length > 0 ? renderEntries(tree, 0) : <Empty>No repository attached.</Empty>}
         </Panel>
@@ -128,6 +150,7 @@ export function DevelopmentWorkspace({ projectId }: { projectId: string }): JSX.
               ))}
             </pre>
           ) : <Empty>Could not load file.</Empty>}
+          {selectedFile && <FileProvenance projectId={projectId} path={selectedFile} />}
           {selectedFile && <FileHistory projectId={projectId} path={selectedFile} />}
         </Panel>
 
@@ -138,6 +161,21 @@ export function DevelopmentWorkspace({ projectId }: { projectId: string }): JSX.
       {/* BOTTOM: terminal */}
       <TerminalPanel projectId={projectId} />
     </div>
+  );
+}
+
+function FileProvenance({ projectId, path }: { projectId: string; path: string }): JSX.Element | null {
+  const [prov, setProv] = useState<{ runId: string | null; taskId: string | null; at: string | null; actionSummary: string | null } | null>(null);
+  useEffect(() => {
+    api.get<{ runId: string | null; taskId: string | null; at: string | null; actionSummary: string | null }>(
+      `/api/projects/${projectId}/file/provenance?path=${encodeURIComponent(path)}`,
+    ).then(setProv).catch(() => setProv(null));
+  }, [projectId, path]);
+  if (!prov?.runId) return null;
+  return (
+    <p className="mono mt-1.5 text-[10px] text-sky-400">
+      ✦ last changed by agent run {prov.runId.slice(0, 16)}… {prov.at ? `(${new Date(prov.at).toLocaleString()})` : ""}
+    </p>
   );
 }
 
@@ -224,6 +262,7 @@ function TerminalPanel({ projectId }: { projectId: string }): JSX.Element {
   const [session, setSession] = useState<TermSession | null>(null);
   const [output, setOutput] = useState("");
   const [command, setCommand] = useState("");
+  const [termType, setTermType] = useState<"USER" | "TEST" | "BUILD">("USER");
   const [error, setError] = useState<string | null>(null);
   const latestSeq = useRef(0);
   const outRef = useRef<HTMLPreElement | null>(null);
@@ -250,7 +289,7 @@ function TerminalPanel({ projectId }: { projectId: string }): JSX.Element {
   const start = async (): Promise<void> => {
     setError(null);
     try {
-      const r = await api.post<{ session: TermSession }>(`/api/projects/${projectId}/terminal`, { type: "USER" });
+      const r = await api.post<{ session: TermSession }>(`/api/projects/${projectId}/terminal`, { type: termType });
       latestSeq.current = 0;
       setOutput("");
       setSession(r.session);
@@ -272,9 +311,14 @@ function TerminalPanel({ projectId }: { projectId: string }): JSX.Element {
       title="TERMINAL"
       right={
         <div className="flex items-center gap-2">
+          <select className="input py-0.5 text-[10px]" value={termType} onChange={(e) => setTermType(e.target.value as typeof termType)} disabled={Boolean(session && alive)}>
+            <option value="USER">USER shell</option>
+            <option value="TEST">TEST output</option>
+            <option value="BUILD">BUILD output</option>
+          </select>
           {session && <Chip tone={alive ? "good" : "info"}>{session.status.toLowerCase()}</Chip>}
           {!session || !alive ? (
-            <button className="btn px-2 py-0.5 text-[10px]" onClick={() => void start()}>open shell</button>
+            <button className="btn px-2 py-0.5 text-[10px]" onClick={() => void start()}>open {termType.toLowerCase()} terminal</button>
           ) : (
             <button className="btn px-2 py-0.5 text-[10px] border-red-800 text-red-300" onClick={() => void api.post(`/api/terminal/${session.id}/kill`, {}).then(() => void poll(session.id))}>kill</button>
           )}

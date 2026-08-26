@@ -20,6 +20,10 @@ export interface DevFlowConfig {
   escalationAfterConsecutiveFailures: number;
   // Graceful shutdown (§25)
   shutdownGraceMs: number;
+  // Resource limits (§37) + circuit breaker (§24)
+  maxConcurrentRuns: number; // 0 = unlimited
+  breakerFailureThreshold: number;
+  breakerCooldownMs: number;
   // Reviews
   findingBlockerConfidenceThreshold: number; // low-confidence findings do not block below this
   // Shell/tool execution safety
@@ -71,6 +75,9 @@ export function loadConfig(overrides: Partial<DevFlowConfig> = {}): DevFlowConfi
     maxRunAttempts: intEnv("DEVFLOW_MAX_RUN_ATTEMPTS", 3),
     escalationAfterConsecutiveFailures: intEnv("DEVFLOW_ESCALATION_THRESHOLD", 3),
     shutdownGraceMs: intEnv("DEVFLOW_SHUTDOWN_GRACE_MS", 10_000),
+    maxConcurrentRuns: intEnv("DEVFLOW_MAX_CONCURRENT_RUNS", 4),
+    breakerFailureThreshold: intEnv("DEVFLOW_BREAKER_THRESHOLD", 3),
+    breakerCooldownMs: intEnv("DEVFLOW_BREAKER_COOLDOWN_MS", 60_000),
     findingBlockerConfidenceThreshold: floatEnv("DEVFLOW_BLOCKER_CONFIDENCE", 0.6),
     commandTimeoutMs: intEnv("DEVFLOW_CMD_TIMEOUT_MS", 120_000),
     commandOutputLimitBytes: intEnv("DEVFLOW_CMD_OUTPUT_LIMIT", 512_000),

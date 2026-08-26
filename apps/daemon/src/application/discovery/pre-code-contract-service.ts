@@ -105,6 +105,36 @@ export class PreCodeContractService {
     return this.ports.docs.get<PreCodeContract>("pre_code_contract", `contract_${projectId}`) ?? null;
   }
 
+  /** Markdown rendering for export (.devflow/ canon integration). */
+  toMarkdown(contract: PreCodeContract): string {
+    const lines: string[] = [
+      `# PRE_IMPLEMENTATION_CONTRACT`,
+      "",
+      `- project: ${contract.projectId}`,
+      `- compiled: ${contract.createdAt}`,
+      `- readiness: ${contract.readiness.ready ? "READY" : "NOT READY"} — ${contract.readiness.reason}`,
+      "",
+    ];
+    for (const section of contract.sections) {
+      lines.push(`## ${section.title}`);
+      lines.push("");
+      lines.push("| topic | status | source | confidence | blocking |");
+      lines.push("|---|---|---|---|---|");
+      for (const item of section.items) {
+        lines.push(`| ${item.topic} | ${item.status} | ${item.source.toLowerCase()} | ${item.confidence.toFixed(2)} | ${item.blocking ? "yes" : "no"} |`);
+      }
+      lines.push("");
+    }
+    if (contract.openQuestions.length > 0) {
+      lines.push("## Open Questions (answer top-down)");
+      lines.push("");
+      for (const q of contract.openQuestions) {
+        lines.push(`1. [${q.section}] priority ${q.priority.toFixed(3)} — ${q.suggestedQuestion}`);
+      }
+    }
+    return lines.join("\n");
+  }
+
   private async build(projectId: string): Promise<PreCodeContract> {
     const [facts, mission] = await Promise.all([
       this.ports.repoFacts(projectId),

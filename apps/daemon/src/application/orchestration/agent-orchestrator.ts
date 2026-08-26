@@ -40,10 +40,14 @@ export interface OrchestratorPorts {
   tools: ToolRegistry;
   config: Pick<
     DevFlowConfig,
-    "maxRunAttempts" | "escalationAfterConsecutiveFailures" | "stallThresholdMs" | "approvalGraceMultiplier" | "providerBackoffInitialMs" | "providerBackoffMaxMs"
+    "maxRunAttempts" | "escalationAfterConsecutiveFailures" | "stallThresholdMs" | "approvalGraceMultiplier" | "providerBackoffInitialMs" | "providerBackoffMaxMs" | "maxConcurrentRuns"
   >;
   /** V3 §17 handoff builder (S2). Optional for backward-compatible test harnesses. */
   handoff?: HandoffService;
+  /** V3 §24 circuit breaker seam + §37 concurrency limit. */
+  breaker?: { recordSuccess(id: string): void; recordFailure(id: string): void };
+  /** §22 capacity feed for quota-aware routing rules (quotaBelowPct). */
+  quotaLookup?: (projectId: string, roleId: string) => number | null;
 }
 
 export interface RuntimeRegistryPort {
@@ -66,6 +70,17 @@ export class AgentOrchestrator {
   ) {}
 
   async startTaskRun(task: TaskContract, runtimeAdapterId: string): Promise<AgentRun> {
+    // Resource limit (§37): bound concurrent agent runs — no unbounded fan-out.
+    if (this.ports.config.maxConcurrentRuns > 0) {
+      const active = this.ports.docs
+        .list<AgentRun>("agent_run", task.projectId)
+        .filter((r) => r.status === "RUNNING").length;
+      if (active >= this.ports.config.maxConcurrentRuns) {
+        throw new Error(
+          `[orchestrator/start] concurrency limit reached (${active}/${this.ports.config.maxConcurrentRuns} running) — cancel or wait`,
+        );
+      }
+    }
     const priorRuns = this.ports.docs.list<AgentRun>("agent_run", task.projectId).filter((r) => r.taskId === task.id);
     const attempts = priorRuns.length;
     if (attempts >= this.ports.config.maxRunAttempts) {
@@ -81,7 +96,9 @@ export class AgentOrchestrator {
     const routingCtx = {
       riskTier: task.riskTier,
       failedAttempts: priorRuns.filter((r) => r.status === "FAILED").length,
-      quotaPct: null, // capacity probe integration lands with §22 quota refresh
+      // §22→§21 feed: known remaining-percent for the role's bound runtime;
+      // unknown stays null and never fires a quota rule.
+      quotaPct: this.ports.quotaLookup?.(task.projectId, task.ownerRole) ?? null,
     };
     const resolution = this.ports.composer?.resolveDetailed
       ? this.ports.composer.resolveDetailed(task.projectId, task.id, task.ownerRole, runOverride, routingCtx)
@@ -331,6 +348,8 @@ export class AgentOrchestrator {
         backoffMs = this.ports.config.providerBackoffInitialMs;
         consecutiveProviderFailures = 0;
       } catch (err) {
+        // Circuit breaker (§24): every observed runtime failure counts.
+        this.ports.breaker?.recordFailure(runtimeAdapterId);
         // Fatal provider states (cancel/auth/runtime-missing) are never retried (§16).
         if ((err as { providerFatal?: boolean }).providerFatal) {
           // A concurrent user cancel may have already finalized this run — never overwrite it.
@@ -358,6 +377,8 @@ export class AgentOrchestrator {
 
       switch (proposal.kind) {
         case "FINISH": {
+          // Circuit breaker (§24): observed success resets the failure streak.
+          this.ports.breaker?.recordSuccess(runtimeAdapterId);
           // Review R7: a drained (SYSTEM_SHUTDOWN) run must not be resurrected
           // to SUCCEEDED if its process happened to finish during shutdown.
           const settled = this.ports.docs.get<AgentRun>("agent_run", run.id);

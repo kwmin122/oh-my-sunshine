@@ -52,6 +52,8 @@ import { WorkspaceService } from "./application/workspace/workspace-service.js";
 import { TerminalService } from "./application/terminal/terminal-service.js";
 import { ConversationService } from "./application/conversation/conversation-service.js";
 import { PreCodeContractService } from "./application/discovery/pre-code-contract-service.js";
+import { recoverOrphanedRuns } from "./application/orchestration/crash-recovery.js";
+import { RuntimeCircuitBreaker } from "./plugins/runtimes/circuit-breaker.js";
 
 const log = createLogger("main");
 
@@ -69,6 +71,10 @@ async function main(): Promise<void> {
   const policy = new PresetPolicyEngine();
   const gateway = new ActionGateway({ docs, events, policy });
   gateway.expireUnresolvedApprovals();
+  // Crash recovery (§26): any RUNNING run from a previous process is orphaned —
+  // finalize it honestly and release its task before accepting new work.
+  const orphans = recoverOrphanedRuns(docs, events);
+  if (orphans.length > 0) log.info("crash recovery finalized orphaned runs", { count: orphans.length });
 
   // ---- Workflow engine with deterministic delivery definition ----
   const deliveryDef = buildDeliveryWorkflowDefinition();
@@ -127,6 +133,10 @@ async function main(): Promise<void> {
   const composer = new TeamComposerService({ docs, events }, () =>
     applyDiscoveryToCatalog(buildCatalog(() => false), discovered),
   );
+  // Circuit breaker (§24): an OPEN runtime is treated as unusable in routing so
+  // fallbacks engage; LOCKED bindings fail closed naturally.
+  const breaker = new RuntimeCircuitBreaker(config.breakerFailureThreshold, config.breakerCooldownMs);
+  composer.setHealthPredicate((id) => !breaker.isOpen(id));
   // Normalized runtime event stream (V3 §15) → EventStore as agent.run_output.
   runtimes.setEventSink((e) => {
     try {
@@ -180,6 +190,19 @@ async function main(): Promise<void> {
       tools,
       config,
       handoff: new HandoffService({ docs, events, git }),
+      breaker,
+      quotaLookup: (projectId, roleId) => {
+        // Latest capacity snapshot for the role's bound runtime; null = unknown.
+        const binding =
+          composer.listBindings(projectId).find((b) => b.roleId === roleId) ??
+          composer.orgDefaults().find((b) => b.roleId === roleId);
+        if (!binding) return null;
+        const candidates = docs
+          .list<{ runtimeId: string; usedPercentRemaining: number | null; refreshedAt: string }>("provider_capacity")
+          .filter((c) => c.runtimeId.replace(/^runtime_/, "") === binding.runtimeId && c.usedPercentRemaining !== null)
+          .sort((a, b) => b.refreshedAt.localeCompare(a.refreshedAt));
+        return candidates[0]?.usedPercentRemaining ?? null;
+      },
       composer: {
         resolveForTask: (projectId, taskId, ownerRoleId, runOverride) => composer.resolveForTask(projectId, taskId, ownerRoleId, runOverride),
         resolveDetailed: (projectId, taskId, ownerRoleId, runOverride) => composer.resolveDetailed(projectId, taskId, ownerRoleId, runOverride),
@@ -277,6 +300,12 @@ async function main(): Promise<void> {
     workflow,
     git,
     workflowComposer: composerWorkflows,
+    contractGate: process.env.DEVFLOW_REQUIRE_IMPL_CONTRACT === "1"
+      ? {
+          isReady: (pid) => contract?.get(pid)?.readiness.ready ?? null,
+          topQuestion: (pid) => contract?.get(pid)?.openQuestions[0]?.suggestedQuestion ?? null,
+        }
+      : undefined,
     roles: () => roles,
     scanner,
     tools,
@@ -320,16 +349,29 @@ async function main(): Promise<void> {
   }
 
   // ---- Development Workspace services (V4/S10) + Pre-Code Contract (V5/S11) ----
-  const workspace = new WorkspaceService(projects, git);
+  // `contract` is assigned after ProjectService exists — declared here to break
+  // the initialization cycle (projects → contractGate → contract).
+  let contract: PreCodeContractService | undefined;
+  const workspace = new WorkspaceService(projects, git, docs);
   let wsBroadcast: (message: Record<string, unknown>) => void = () => undefined;
+  const watchers: Array<() => void> = [];
   const terminals = new TerminalService(
     ({ projectId, type, entityType, entityId, actorType, payload }) => {
       events.append({ projectId: projectId as never, type: type as never, entityType: entityType as never, entityId, actorType, payload });
     },
     (message) => wsBroadcast(message),
   );
-  const conversation = new ConversationService({ docs, events, provider: providers.getDefault() });
-  const contract = new PreCodeContractService({
+  const conversation = new ConversationService({
+    docs,
+    events,
+    provider: providers.getDefault(),
+    // RUNTIME_CHANGE messages pin the active task's next run via the standard override.
+    composer: {
+      setTaskOverride: (projectId, override) => composer.setTaskOverride(projectId, { ...override, roleId: null, updatedAt: new Date().toISOString() }),
+      catalog: () => composer.catalog().map((c) => ({ id: c.id, label: c.label })),
+    },
+  });
+  contract = new PreCodeContractService({
     docs,
     events,
     projects,
@@ -353,11 +395,51 @@ async function main(): Promise<void> {
   // Shutdown guard registered before routes: once draining starts, no mutating
   // requests — including mobile commands — may touch state (review R12).
   let shuttingDown = false;
+  const isReadOnly = (method: string): boolean => method === "GET" || method === "HEAD";
   app.addHook("onRequest", async (req, reply) => {
-    const readOnly = req.method === "GET" || req.method === "HEAD";
-    if (shuttingDown && !readOnly) {
+    if (shuttingDown && !isReadOnly(req.method)) {
       await reply.code(503).send({ error: "daemon is shutting down" });
+      return;
     }
+    // /api/v1 versioning seam (V3 §10): v1 is the stable contract surface; it
+    // currently aliases the unversioned routes until a breaking change forks it.
+    if (req.raw.url?.startsWith("/api/v1/")) {
+      req.raw.url = `/api/${req.raw.url.slice("/api/v1/".length)}`;
+    }
+  });
+
+  // Idempotency keys (V3 §9/§31): a retried mutating request with the same key
+  // replays the recorded response instead of executing twice.
+  const idempotencyKeyOf = (headers: Record<string, unknown>): string | null => {
+    const key = headers["idempotency-key"];
+    return typeof key === "string" && key.length >= 8 ? key : null;
+  };
+  app.addHook("onRequest", async (req, reply) => {
+    const key = idempotencyKeyOf(req.headers);
+    if (!key || isReadOnly(req.method)) return;
+    const url = (req.raw.url ?? "").split("?")[0] ?? "";
+    const row = db
+      .prepare("SELECT status_code, response FROM idempotency_keys WHERE key = ? AND method = ? AND url = ?")
+      .get(key, String(req.method), url) as { status_code: number; response: string } | undefined;
+    if (row) {
+      reply
+        .code(row.status_code)
+        .header("content-type", "application/json; charset=utf-8")
+        .header("idempotent-replay", "true")
+        .send(row.response);
+    }
+  });
+  app.addHook("onSend", async (req, reply, payload) => {
+    const key = idempotencyKeyOf(req.headers);
+    if (!key || isReadOnly(req.method)) return payload;
+    if (reply.statusCode >= 200 && reply.statusCode < 300 && typeof payload === "string") {
+      try {
+        db.prepare(
+          "INSERT OR REPLACE INTO idempotency_keys (key, method, url, status_code, response, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ).run(key, String(req.method), (req.raw.url ?? "").split("?")[0] ?? "", reply.statusCode, payload, new Date().toISOString());
+      } catch { /* best-effort — never break the request over audit */ }
+    }
+    return payload;
   });
 
   const sockets = new Set<WebSocket>();
@@ -375,6 +457,14 @@ async function main(): Promise<void> {
       if (socket.readyState === 1) socket.send(JSON.stringify(message));
     }
   };
+  // Realtime fs events (V4 §5): watch every attached repo → debounced broadcasts.
+  for (const p of projects.listProjects()) {
+    if (!p.repositoryPath) continue;
+    const dispose = workspace.watchProject(p.id, (evt) => {
+      wsBroadcast({ ...evt, projectId: p.id, at: new Date().toISOString() });
+    });
+    if (dispose) watchers.push(dispose);
+  }
 
   app.get("/api/runtimes/discover", async () => {
     discovered = await discoverRuntimes();
@@ -453,6 +543,8 @@ async function main(): Promise<void> {
     }
     // Kill every live terminal session — no shell outlives the daemon.
     for (const t of terminals.list()) terminals.kill(t.id);
+    // Release fs watchers.
+    for (const dispose of watchers) dispose();
     // Stop the HTTP server, audit completion, checkpoint WAL into the main DB
     // file, then close cleanly (review R13: complete-event precedes close).
     await app.close().catch(() => undefined);

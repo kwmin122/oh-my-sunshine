@@ -94,6 +94,15 @@ export type TeamComposerPorts = {
 };
 
 export class TeamComposerService {
+  /** Optional runtime-health overlay (circuit breaker §24): a catalog-available
+   * runtime that is circuit-OPEN is treated as unusable so fallbacks engage.
+   * LOCKED bindings then fail closed naturally. */
+  private healthPredicate: ((runtimeId: string) => boolean) | null = null;
+
+  setHealthPredicate(predicate: (runtimeId: string) => boolean): void {
+    this.healthPredicate = predicate;
+  }
+
   constructor(
     private readonly ports: TeamComposerPorts,
     private readonly catalogProvider: () => RuntimeCatalogEntry[],
@@ -356,7 +365,8 @@ export class TeamComposerService {
     routingCtx?: { riskTier?: "LOW" | "NORMAL" | "HIGH"; failedAttempts?: number; quotaPct?: number | null },
   ): { runtime: ResolvedRuntime | null; lockedUnavailableRuntimeId?: string; ruleApplied?: { runtimeId: string; rules: RoutingRule[] } } {
     const catalog = this.catalog();
-    const usable = (id: string): boolean => catalog.find((r) => r.id === id)?.available === true;
+    const usable = (id: string): boolean =>
+      catalog.find((r) => r.id === id)?.available === true && this.healthPredicate?.(id) !== false;
     const toResolved = (
       requested: string,
       primary: { runtimeId: string; providerId?: string | null; model?: string | null; effort?: EffortLevel | null },

@@ -61,4 +61,16 @@ function migrate(db: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_documents_project ON documents(kind, project_id);
   `);
+  // Idempotency keys (V3 §9/§31): replay-safe mutating requests.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS idempotency_keys (
+      key TEXT NOT NULL,
+      method TEXT NOT NULL,
+      url TEXT NOT NULL,
+      status_code INTEGER NOT NULL,
+      response TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (key, method, url)
+    );
+  `);
 }

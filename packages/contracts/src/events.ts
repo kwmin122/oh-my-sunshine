@@ -42,6 +42,13 @@ export const EVENT_TYPES = [
   "agent.handoff_generated",
   "agent.handoff_consumed",
   "agent.run_cancelled",
+  "agent.run_orphaned",
+  "terminal.session_created",
+  "terminal.session_ended",
+  "workspace.file_changed",
+  "contract.refreshed",
+  "task.instruction_appended",
+  "requirement.change_detected",
   "team.locked_unavailable",
   "routing.rule_applied",
   // V3: daemon lifecycle (§25)

@@ -1,8 +1,9 @@
-import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync, watch, type FSWatcher } from "node:fs";
 import { join, relative, sep } from "node:path";
 import type { GitAdapter } from "@devflow/contracts";
 import { assertPathInsideWorkspace } from "../../lib/path-guard.js";
 import type { ProjectService } from "../project/project-service.js";
+import type { DocumentRepository } from "../../infrastructure/db/document-repository.js";
 
 /**
  * Development Workspace backend (V4 §2–4 / S10). The renderer never touches the
@@ -52,6 +53,7 @@ export class WorkspaceService {
   constructor(
     private readonly projects: Pick<ProjectService, "getProject">,
     private readonly git: GitAdapter,
+    private readonly docs?: DocumentRepository,
   ) {}
 
   private resolve(projectId: string): { workspaceRoot: string; absolute: (rel: string) => string } {
@@ -167,5 +169,104 @@ export class WorkspaceService {
     const { workspaceRoot } = this.resolve(projectId);
     assertPathInsideWorkspace(workspaceRoot, filePath);
     return this.git.fileLog(workspaceRoot, filePath, limit);
+  }
+
+  /** V4 §4 provenance: which agent run last touched this file (gateway audit). */
+  fileProvenance(projectId: string, filePath: string): { runId: string | null; taskId: string | null; at: string | null; actionSummary: string | null } {
+    if (!this.docs) return { runId: null, taskId: null, at: null, actionSummary: null };
+    const actions = this.docs
+      .list<{ id: string; projectId: string; runId: string | null; target: string | null; toolId: string; summary: string; status: string; createdAt: string }>("action", projectId)
+      .filter((a) => a.status === "SUCCEEDED" && (a.target === filePath || a.target?.endsWith(`/${filePath}`)))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const last = actions[0];
+    if (!last) return { runId: null, taskId: null, at: null, actionSummary: null };
+    const run = last.runId ? this.docs.get<{ taskId: string | null }>("agent_run", last.runId) : undefined;
+    return { runId: last.runId ?? null, taskId: run?.taskId ?? null, at: last.createdAt, actionSummary: last.summary };
+  }
+
+  /** Content search (V4 §2): line-level grep over text files. Budget-capped —
+   * this is honest grep, not an index; symbol intelligence is a separate service. */
+  searchContents(
+    projectId: string,
+    query: string,
+    opts: { maxResults?: number; maxScanBytes?: number } = {},
+  ): Array<{ path: string; line: number; preview: string }> {
+    const q = query.toLowerCase();
+    if (q.length < 2) return [];
+    const maxResults = opts.maxResults ?? 40;
+    const maxScanBytes = opts.maxScanBytes ?? 4_000_000;
+    let scanned = 0;
+    const hits: Array<{ path: string; line: number; preview: string }> = [];
+    const { workspaceRoot } = this.resolve(projectId);
+    const walk = (absDir: string, depth: number): void => {
+      if (hits.length >= maxResults || scanned >= maxScanBytes || depth > 10) return;
+      for (const name of readdirSync(absDir)) {
+        if (IGNORED_DIRS.has(name)) continue;
+        if (hits.length >= maxResults || scanned >= maxScanBytes) return;
+        const abs = join(absDir, name);
+        let stat;
+        try {
+          stat = statSync(abs);
+        } catch {
+          continue;
+        }
+        if (stat.isDirectory()) {
+          walk(abs, depth + 1);
+          continue;
+        }
+        if (stat.size > MAX_READ_BYTES) continue;
+        try {
+          const buf = readFileSync(abs);
+          scanned += Math.min(buf.length, 4096); // binary sniff budget
+          if (buf.subarray(0, 1024).includes(0)) continue; // binary
+          const rel = relative(workspaceRoot, abs).split(sep).join("/");
+          const lines = buf.toString("utf8").split("\n");
+          for (let i = 0; i < lines.length; i++) {
+            scanned += lines[i]!.length;
+            if (scanned >= maxScanBytes) return;
+            if (lines[i]!.toLowerCase().includes(q)) {
+              hits.push({ path: rel, line: i + 1, preview: lines[i]!.trim().slice(0, 200) });
+              if (hits.length >= maxResults) return;
+            }
+          }
+        } catch {
+          continue; // unreadable (permissions/race) — skip honestly
+        }
+      }
+    };
+    walk(workspaceRoot, 0);
+    return hits;
+  }
+
+  /** Realtime fs events (V4 §5): recursive watch → debounced change callbacks.
+   * Returns a disposer. macOS/Windows get native recursion; Linux Node ≥20 too. */
+  watchProject(
+    projectId: string,
+    onChange: (event: { type: "file.changed"; path: string | null }) => void,
+  ): (() => void) | null {
+    let workspaceRoot: string;
+    try {
+      workspaceRoot = this.resolve(projectId).workspaceRoot;
+    } catch {
+      return null; // no repo attached — nothing to watch
+    }
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let pendingPath: string | null = null;
+    let watcher: FSWatcher;
+    try {
+      watcher = watch(workspaceRoot, { recursive: true }, (_event, filename) => {
+        pendingPath = filename ? filename.split(sep).join("/") : pendingPath;
+        if (pendingPath && IGNORED_DIRS.has(pendingPath.split("/")[0]!)) return;
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          timer = null;
+          onChange({ type: "file.changed", path: pendingPath });
+          pendingPath = null;
+        }, 300);
+      });
+    } catch {
+      return null; // platform without recursive support — polling fallback stays
+    }
+    return () => watcher.close();
   }
 }
