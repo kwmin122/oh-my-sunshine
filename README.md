@@ -37,6 +37,20 @@ Open http://localhost:5288 → create a project → submit a vague mission
 ("Add Google login") → answer one question at a time → **Plan Delivery →** →
 execute tasks → resolve decisions/approvals → watch evidence and Proof of Done.
 
+### Development Workspace (V4)
+
+The **Development Workspace** tab is the hands-on surface: browse the real
+repository (path-guarded through the daemon), read files and diffs, run a real
+terminal in the project workspace, and talk to your Engineering Lead — task
+refinements land in the active task's operator notes, requirement changes flag
+affected tasks for replan and stale their evidence. See `docs/V4-development-workspace.md`.
+
+### Implementation Contract (V5)
+
+The **Implementation Contract** tab compiles the whole-system design contract
+from repo facts before coding starts, ranks open gaps by rework-weighted
+priority, and gates implementation readiness. See `docs/V5-pre-code-contract.md`.
+
 ### Real model providers (optional)
 
 ```bash
