@@ -1,8 +1,7 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import type {
   AgentActionProposal,
   AgentRuntimeAdapter,
@@ -23,7 +22,6 @@ import type {
  * status and failure taxonomy. Every supported runtime here has a verified
  * machine-readable mode — no unstructured stdout scraping.
  */
-const execFileAsync = promisify(execFile);
 
 export type CliAdapterKind = "claude-code" | "codex-cli" | "opencode";
 
@@ -495,12 +493,3 @@ function killTree(child: NonNullable<CliSession["child"]>, signal: NodeJS.Signal
   }
 }
 
-/** Probe whether the binary exists (used by registry wiring after discovery). */
-export async function cliExists(bin: string): Promise<boolean> {
-  try {
-    await execFileAsync("which", [bin]);
-    return true;
-  } catch {
-    return false;
-  }
-}

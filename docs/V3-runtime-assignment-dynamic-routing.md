@@ -54,15 +54,22 @@ Runtime A → Checkpoint/Handoff Packet → Runtime B. 내용: objective · plan
 - Run 도중 quota 고갈/장애 → PREFERRED/AUTO면 즉시 대체, LOCKED면 정지+질의
 - 변경은 모두 Event Store에 actor와 함께 기록(Audit)
 
-## 구현 상태 (거짓 없이)
+## 구현 상태 (거짓 없이 — Enterprise Completion Sprint 이후 갱신)
 
-| 개념 | 상태 | 위치 |
+| 개념 | 상태 | 위치 / 증거 |
 |------|------|------|
-| 7계층 해석(org/project/role/task/run) | ✅ | team-composer-service.resolveForTask |
-| LOCKED/PREFERRED/AUTO 모드 | ✅(본 커밋) | binding.routingMode + resolve 강제 |
-| Workflow Composer(그래프 편집) | 📋 다음 스프린트 | 워크플로우 엔진 위 UI |
-| User-defined Role | 📋 다음 스프린트 | role template 저장 |
-| 조건식 Routing Rules | 📋 | rule engine |
-| Handoff Packet | 🟡 | checkpoint 서비스 존재, 패킷 스키마 미정 |
-| Orchestrator 교체 가능 | ✅ | Lead도 role binding으로 배정 |
-| CLI 실행 어댑터(claude -p / codex exec) | 🟡 진행중 | discovery 완료, executor 다음 |
+| 7계층 해석(org/project/role/task/run) | ✅ | team-composer-service.resolveForTask/resolveDetailed |
+| LOCKED/PREFERRED/AUTO 모드 | ✅ | binding.routingMode + resolve 강제. **LOCKED+불가 시 orchestrator가 fail-closed**(task BLOCKED + `team.locked_unavailable` 이벤트) — 무음 mock 대체 제거 |
+| Workflow Composer | ✅ | workflow-composer-service CRUD/검증(사이클·역할 누락 차단) + project 바인딩. 적용 시 planDeliveryTasks가 STEP 노드당 태스크(WF-xx)를 생성하고 의존성 게이트가 실행 순서를 강제. UI 탭 존재. 테스트: workflow-execution.spec |
+| User-defined Role | ✅ | custom_role 저장(deterministic slug), roles() 병합, role resolver(내장→커스텀→honest generic). 테스트: custom-role.spec ("Performance Reviewer" 실제 실행) |
+| 조건식 Routing Rules | ✅ | RoleRuntimeBinding.routingRules(risk/quotaBelowPct/unavailable/failedAttemptsGte), PREFERRED/AUTO만 적용, LOCKED 면역. `routing.rule_applied` 감사 이벤트. quota는 미지수일 때 규칙 불일치(추측 금지) — capacity probe 연동은 §22 후속 |
+| Handoff Packet | ✅ | handoff-service: objective/AC/plan/diff/changed files/failure taxonomy/revision/evidence/from→to. `agent.handoff_generated/consumed` 이벤트, 다음 런타임 context brief에 주입(실제 stdin 검증) |
+| Orchestrator 교체 가능 | ✅ | Lead도 role binding으로 배정. 런타임 교체는 handoff로 이어짐 |
+| CLI 실행 어댑터 | ✅ | claude stream-json(--verbose 필수)/codex exec --json(-o)/opencode run --format json 파서. 정규화 이벤트(V3 §15) EventStore 기록. **라이브 스모크: Claude PASS·Codex PASS**(DEVFLOW_LIVE_SMOKE=1, 파일 생성 검증). 프로세스 그룹 kill로 고아 방지(pgrep 검증) |
+
+### 스프린트에서 발견·수정된 회귀/드리프트
+- run.runtimeConfigId가 caller default(mock)을 기록해 **cancel이 실제 런타임에 도달하지 않던 버그** 수정
+- run.sessionId가 세션 문서 id를 담아 stop()이 빈 동작이던 문제 → runtime handle 저장
+- defaultAgentRoles id가 매 프로세스 랜덤 접미사라 참조가 재시작마다 깨지던 문제 → deterministic id(role_be 등)
+- mobile resumeTask stub 제거(gated task는 gate 경유 강제)
+- claude auth status의 camelCase JSON을 파싱하지 못해 LOGGED_IN이 UNKNOWN으로 표기되던 문제 수정

@@ -202,7 +202,8 @@ async function main(): Promise<void> {
   // Workflow Composer (V3 §18/S4): user-defined flow definitions + project binding.
   const composerWorkflows = new WorkflowComposerService({ docs, events });
 
-  const mobileControl = new MobileControlService(docs, events, {    resolveDecision: (decisionId, chosenOption) => {
+  const mobileControl = new MobileControlService(docs, events, {
+    resolveDecision: (decisionId, chosenOption) => {
       decisions.resolve(decisionId, chosenOption);
       projects.resolveDecisionHook(decisionId, chosenOption);
     },
@@ -216,8 +217,16 @@ async function main(): Promise<void> {
       events.append({ projectId: task.projectId as never, type: "task.blocked", entityType: "task", entityId: task.id, actorType: "USER", payload: { reason: "mobile pause" } });
     },
     resumeTask: async (taskId) => {
-      projects.resolveDecisionHook("", "");
-      void taskId;
+      // Honest resume (§39): only ungated BLOCKED tasks return to READY.
+      // Decision/approval-gated tasks must go through their own resolution path.
+      const task = docs.get<{ id: string; projectId: string; status: string; blockers: string[]; updatedAt: string }>("task", taskId);
+      if (!task) throw new Error(`[mobile/resumeTask] unknown task '${taskId}'`);
+      const gated =
+        decisions.listOpen(task.projectId).some((d) => d.taskId === taskId) ||
+        approvals.listOpen(task.projectId).some((a) => a.taskId === taskId);
+      if (gated) throw new Error("[mobile/resumeTask] task is gated — resolve the decision/approval first");
+      docs.put("task", task.id, task.projectId, { ...task, status: "READY", blockers: [], updatedAt: new Date().toISOString() });
+      events.append({ projectId: task.projectId as never, type: "task.ready" as never, entityType: "task", entityId: task.id, actorType: "USER", payload: { reason: "mobile resume" } });
     },
     leadReply: async (_projectId, question) => {
       const answer = await providers.getDefault().generate({
