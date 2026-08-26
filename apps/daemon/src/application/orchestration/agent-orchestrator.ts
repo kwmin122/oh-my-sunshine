@@ -34,7 +34,7 @@ export interface OrchestratorPorts {
   /** AI Team Composer (spec §31): resolves role→runtime→model with fallbacks. */
   composer?: {
     resolveForTask(projectId: string, taskId: string, ownerRoleId: string | null, runOverride?: { runtimeId: string }): ResolvedRuntime | null;
-    resolveDetailed?(projectId: string, taskId: string, ownerRoleId: string | null, runOverride?: { runtimeId: string }): { runtime: ResolvedRuntime | null; lockedUnavailableRuntimeId?: string };
+    resolveDetailed?(projectId: string, taskId: string, ownerRoleId: string | null, runOverride?: { runtimeId: string }, routingCtx?: { riskTier?: "LOW" | "NORMAL" | "HIGH"; failedAttempts?: number; quotaPct?: number | null }): { runtime: ResolvedRuntime | null; lockedUnavailableRuntimeId?: string; ruleApplied?: { runtimeId: string; rules: unknown[] } };
     listRuntimeIds(): string[];
   };
   tools: ToolRegistry;
@@ -78,8 +78,13 @@ export class AgentOrchestrator {
     // Run override (nearest wins): an explicit caller-provided runtime beats role/task layers,
     // but LOCKED bindings still veto auto-substitution downstream.
     const runOverride = runtimeAdapterId !== "mock-runtime" ? { runtimeId: runtimeAdapterId } : undefined;
+    const routingCtx = {
+      riskTier: task.riskTier,
+      failedAttempts: priorRuns.filter((r) => r.status === "FAILED").length,
+      quotaPct: null, // capacity probe integration lands with §22 quota refresh
+    };
     const resolution = this.ports.composer?.resolveDetailed
-      ? this.ports.composer.resolveDetailed(task.projectId, task.id, task.ownerRole, runOverride)
+      ? this.ports.composer.resolveDetailed(task.projectId, task.id, task.ownerRole, runOverride, routingCtx)
       : { runtime: this.ports.composer?.resolveForTask(task.projectId, task.id, task.ownerRole, runOverride) ?? null };
     const resolved = resolution.runtime;
     let effectiveAdapter = runtimeAdapterId;
@@ -101,6 +106,18 @@ export class AgentOrchestrator {
       throw new Error(
         `[orchestrator/start] LOCKED runtime '${resolution.lockedUnavailableRuntimeId}' is unavailable for role ${task.ownerRole} — refusing auto-substitution`,
       );
+    }
+    if (resolution.ruleApplied && resolved) {
+      // Conditional rule changed the selection (§21/S6) — audit it.
+      effectiveAdapter = resolved.runtimeId;
+      modelHint = { providerId: resolved.providerId, model: resolved.model, effort: resolved.effort };
+      this.emit(task.projectId, "routing.rule_applied", task.id, {
+        riskTier: routingCtx.riskTier,
+        failedAttempts: routingCtx.failedAttempts,
+        selectedRuntime: effectiveAdapter,
+        requestedRuntime: resolved.requestedRuntimeId,
+        chain: resolved.chain,
+      });
     }
     if (resolved) {
       const registered = this.ports.composer?.listRuntimeIds().includes(resolved.runtimeId) ?? false;

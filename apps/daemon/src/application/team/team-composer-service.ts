@@ -5,6 +5,7 @@ import type {
   ModelOption,
   ResolvedRuntime,
   RoleRuntimeBinding,
+  RoutingRule,
   RuntimeCatalogEntry,
   RuntimeFallback,
   TaskRuntimeOverride,
@@ -320,6 +321,28 @@ export class TeamComposerService {
     return this.resolveDetailed(projectId, taskId, ownerRoleId, runOverride).runtime;
   }
 
+  // ---------- Conditional routing rules (V3 §5/§21 / S6) ----------
+
+  /**
+   * Evaluates the binding's rules in order; returns the first rule whose
+   * condition matches AND whose target runtime is currently available.
+   * Unknown inputs (quota unknown) never satisfy a rule — no guessing.
+   */
+  evaluateRoutingRules(
+    rules: RoutingRule[],
+    ctx: { riskTier?: "LOW" | "NORMAL" | "HIGH"; failedAttempts?: number; quotaPct?: number | null; primaryAvailable: boolean },
+  ): { runtimeId: string } | null {
+    for (const rule of rules) {
+      const c = rule.when;
+      if (c.risk !== undefined && c.risk !== ctx.riskTier) continue;
+      if (c.quotaBelowPct !== undefined && (ctx.quotaPct === null || ctx.quotaPct === undefined || ctx.quotaPct >= c.quotaBelowPct)) continue;
+      if (c.unavailable !== undefined && c.unavailable !== !ctx.primaryAvailable) continue;
+      if (c.failedAttemptsGte !== undefined && (ctx.failedAttempts ?? 0) < c.failedAttemptsGte) continue;
+      return { runtimeId: rule.use };
+    }
+    return null;
+  }
+
   /**
    * Rich resolution used by the orchestrator (V3 §4): distinguishes "nothing
    * composed" from "LOCKED runtime unavailable" so LOCKED can fail closed
@@ -330,7 +353,8 @@ export class TeamComposerService {
     taskId: string,
     ownerRoleId: string | null,
     runOverride?: Partial<TaskRuntimeOverride>,
-  ): { runtime: ResolvedRuntime | null; lockedUnavailableRuntimeId?: string } {
+    routingCtx?: { riskTier?: "LOW" | "NORMAL" | "HIGH"; failedAttempts?: number; quotaPct?: number | null },
+  ): { runtime: ResolvedRuntime | null; lockedUnavailableRuntimeId?: string; ruleApplied?: { runtimeId: string; rules: RoutingRule[] } } {
     const catalog = this.catalog();
     const usable = (id: string): boolean => catalog.find((r) => r.id === id)?.available === true;
     const toResolved = (
@@ -359,6 +383,31 @@ export class TeamComposerService {
       return null;
     };
 
+    // Conditional rules (§21): evaluated before the static chain. LOCKED is immune.
+    const applyRules = (
+      bindingToUse: RoleRuntimeBinding,
+      preset2: ResolvedRuntime["permissionPreset"],
+      chainRoot: string,
+    ): { runtime: ResolvedRuntime; ruleApplied: true } | null => {
+      const mode = bindingToUse.routingMode ?? "AUTO";
+      if (mode === "LOCKED" || !bindingToUse.routingRules?.length || !routingCtx) return null;
+      const matched = this.evaluateRoutingRules(bindingToUse.routingRules, {
+        riskTier: routingCtx.riskTier,
+        failedAttempts: routingCtx.failedAttempts,
+        quotaPct: routingCtx.quotaPct,
+        primaryAvailable: usable(bindingToUse.runtimeId),
+      });
+      if (!matched || !usable(matched.runtimeId)) return null;
+      return {
+        runtime: {
+          runtimeId: matched.runtimeId, providerId: null, model: null, effort: null,
+          permissionPreset: preset2, requestedRuntimeId: bindingToUse.runtimeId,
+          fallbackUsed: false, chain: [chainRoot, `rule→${matched.runtimeId}`],
+        },
+        ruleApplied: true,
+      };
+    };
+
     const stored = this.ports.docs.get<TaskRuntimeOverride>("team_task_override", taskId);
     const effOv = runOverride?.runtimeId ? { ...(stored ?? { taskId, roleId: ownerRoleId, updatedAt: "" }), ...runOverride } as TaskRuntimeOverride : stored;
     const projectBinding = ownerRoleId ? this.listBindings(projectId).find((b) => b.roleId === ownerRoleId) ?? null : null;
@@ -370,11 +419,15 @@ export class TeamComposerService {
       return { runtime: toResolved(effOv.runtimeId, effOv, preset, binding?.fallbacks ?? [], "task-override") };
     }
     if (projectBinding) {
+      const ruled = applyRules(projectBinding, preset, "role-binding");
+      if (ruled) return { runtime: ruled.runtime, ruleApplied: { runtimeId: ruled.runtime.runtimeId, rules: projectBinding.routingRules ?? [] } };
       const runtime = toResolved(projectBinding.runtimeId, projectBinding, preset, projectBinding.fallbacks, "role-binding", projectBinding.routingMode ?? "AUTO");
       if (!runtime && projectBinding.routingMode === "LOCKED") return { runtime: null, lockedUnavailableRuntimeId: projectBinding.runtimeId };
       return { runtime };
     }
     if (orgBinding) {
+      const ruled = applyRules(orgBinding, orgBinding.permissionPreset ?? "WORKSPACE", "org-default");
+      if (ruled) return { runtime: ruled.runtime, ruleApplied: { runtimeId: ruled.runtime.runtimeId, rules: orgBinding.routingRules ?? [] } };
       const runtime = toResolved(orgBinding.runtimeId, orgBinding, orgBinding.permissionPreset ?? "WORKSPACE", orgBinding.fallbacks, "org-default", orgBinding.routingMode ?? "AUTO");
       if (!runtime && orgBinding.routingMode === "LOCKED") return { runtime: null, lockedUnavailableRuntimeId: orgBinding.runtimeId };
       return { runtime };

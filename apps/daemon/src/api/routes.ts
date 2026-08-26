@@ -474,6 +474,15 @@ export function registerRoutes(app: FastifyInstance, deps: {
       routingMode: z.enum(["LOCKED", "PREFERRED", "AUTO"]).optional(),
       permissionPreset: z.enum(["READ_ONLY", "WORKSPACE", "ELEVATED_ALLOWED"]).optional(),
       fallbacks: z.array(z.object({ runtimeId: z.string(), providerId: z.string().nullish(), model: z.string().nullish(), effort: z.enum(["LOW", "MEDIUM", "HIGH", "MAX"]).nullish() })).default([]),
+      routingRules: z.array(z.object({
+        when: z.object({
+          risk: z.enum(["LOW", "NORMAL", "HIGH"]).optional(),
+          quotaBelowPct: z.number().min(0).max(100).optional(),
+          unavailable: z.boolean().optional(),
+          failedAttemptsGte: z.number().int().min(1).max(50).optional(),
+        }),
+        use: z.string().min(1),
+      })).max(20).optional(),
     }).safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: "invalid input" });
     const binding = deps.composer.setBinding(body.data.projectId, {
@@ -481,6 +490,7 @@ export function registerRoutes(app: FastifyInstance, deps: {
       model: body.data.model ?? null, effort: body.data.effort ?? null,
       permissionPreset: body.data.permissionPreset,
       routingMode: body.data.routingMode,
+      routingRules: body.data.routingRules,
       fallbacks: body.data.fallbacks, source: "MANUAL", reasons: ["set manually in AI Team Composer"],
       updatedAt: new Date().toISOString(),
     });
