@@ -72,6 +72,6 @@
 | 50 | Configuration Hierarchy | ✅ | 7계층 해석기+routing rules |
 
 ## 요약
-- ✅ 31 · 🟡 14 · 📋 5
-- 남은 📋: 데이터 오류 분류(§19) · Rollback 전략(§32) · Human SLA UI(§43) · Data Retention(§44)
-- 남은 🟡 중요: metrics/traces(§28) · RBAC 운영 상세(§15) · Keychain(§16) · offline 배너(§27) · push 필터(§30) · schema_version(§34) · PAUSED(§40) · PARTIAL 집계(§41) · privacy UI(§46) · injection 필터(§47)
+- ✅ 23 · 🟡 21 · 📋 6
+- 📋 6개: §2 데이터 정의(삭제정책) · §6 화면별 Primary Goal 문서 통합 · §19 데이터 오류 분류 · §32 Rollback 전략 · §43 Human SLA UI · §44 Data Retention
+- 🟡 중요: metrics/traces(§28) · RBAC 운영 상세(§15) · Keychain(§16) · offline 배너(§27) · push 필터(§30) · schema_version(§34) · 우선순위 큐(§38) · PAUSED(§40) · PARTIAL 집계(§41) · privacy UI(§46) · injection 필터(§47)
