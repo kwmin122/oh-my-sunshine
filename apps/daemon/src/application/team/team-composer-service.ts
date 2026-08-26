@@ -289,9 +289,14 @@ export class TeamComposerService {
       preset: ResolvedRuntime["permissionPreset"],
       fallbacks: RuntimeFallback[],
       chainRoot: string,
+      mode?: "LOCKED" | "PREFERRED" | "AUTO",
     ): ResolvedRuntime | null => {
       if (usable(primary.runtimeId)) {
         return { runtimeId: primary.runtimeId, providerId: primary.providerId ?? null, model: primary.model ?? null, effort: primary.effort ?? null, permissionPreset: preset, requestedRuntimeId: requested, fallbackUsed: false, chain: [chainRoot] };
+      }
+      // LOCKED (§V3-Routing): user pinned this runtime — never auto-switch. Fail closed.
+      if (mode === "LOCKED") {
+        return null;
       }
       for (const fb of fallbacks) {
         if (usable(fb.runtimeId)) {
@@ -315,10 +320,10 @@ export class TeamComposerService {
       return toResolved(effOv.runtimeId, effOv, preset, binding?.fallbacks ?? [], "task-override");
     }
     if (projectBinding) {
-      return toResolved(projectBinding.runtimeId, projectBinding, preset, projectBinding.fallbacks, "role-binding");
+      return toResolved(projectBinding.runtimeId, projectBinding, preset, projectBinding.fallbacks, "role-binding", projectBinding.routingMode ?? "AUTO");
     }
     if (orgBinding) {
-      return toResolved(orgBinding.runtimeId, orgBinding, orgBinding.permissionPreset ?? "WORKSPACE", orgBinding.fallbacks, "org-default");
+      return toResolved(orgBinding.runtimeId, orgBinding, orgBinding.permissionPreset ?? "WORKSPACE", orgBinding.fallbacks, "org-default", orgBinding.routingMode ?? "AUTO");
     }
     // Nothing composed — engine default keeps work unblocked.
     return toResolved("mock-runtime", { runtimeId: "mock-runtime" }, preset, [], "engine-default");

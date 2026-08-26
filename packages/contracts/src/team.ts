@@ -41,9 +41,13 @@ export interface RuntimeFallback {
   effort?: EffortLevel | null;
 }
 
+/** LOCKED = user-pinned (never auto-switch) · PREFERRED = primary+fallbacks · AUTO = system chooses */
+export type RoutingMode = "LOCKED" | "PREFERRED" | "AUTO";
+
 export interface RoleRuntimeBinding {
   roleId: string;
   runtimeId: string;
+  routingMode?: RoutingMode;
   providerId?: string | null;
   model?: string | null;
   effort?: EffortLevel | null;

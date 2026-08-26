@@ -108,6 +108,31 @@ describe("resolution chain: org → role → task → run (nearest wins)", () =>
   });
 });
 
+describe("routing modes (V3)", () => {
+  it("LOCKED never auto-switches: unavailable primary fails closed instead of degrading", () => {
+    const c = makeComposer(() => false); // no CLIs installed
+    c.setBinding(PROJECT, {
+      roleId: "role_ceo", runtimeId: "claude-code", routingMode: "LOCKED",
+      fallbacks: [{ runtimeId: "codex-cli" }],
+      source: "MANUAL", reasons: ["user pinned"], updatedAt: new Date().toISOString(),
+    });
+    // PREFERRED would degrade to mock; LOCKED must not.
+    expect(c.resolveForTask(PROJECT, "task_l", "role_ceo")).toBeNull();
+  });
+
+  it("PREFERRED still degrades along fallbacks", () => {
+    const c = makeComposer(() => false);
+    c.setBinding(PROJECT, {
+      roleId: "role_qa", runtimeId: "claude-code", routingMode: "PREFERRED",
+      fallbacks: [{ runtimeId: "codex-cli" }, { runtimeId: "mock-runtime" }],
+      source: "MANUAL", reasons: [], updatedAt: new Date().toISOString(),
+    });
+    const r = c.resolveForTask(PROJECT, "task_p", "role_qa")!;
+    expect(r.fallbackUsed).toBe(true);
+    expect(r.runtimeId).toBe("mock-runtime"); // claude+codex unavailable → mock
+  });
+});
+
 describe("auto compose & validation", () => {
   it("composes deterministically with reasons and respects tool requirements", () => {
     const c = makeComposer(() => false);

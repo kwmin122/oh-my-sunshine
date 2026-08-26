@@ -409,6 +409,7 @@ export function registerRoutes(app: FastifyInstance, deps: {
       projectId: z.string().min(1), roleId: z.string().min(1), runtimeId: z.string().min(1),
       providerId: z.string().nullish(), model: z.string().nullish(),
       effort: z.enum(["LOW", "MEDIUM", "HIGH", "MAX"]).nullish(),
+      routingMode: z.enum(["LOCKED", "PREFERRED", "AUTO"]).optional(),
       permissionPreset: z.enum(["READ_ONLY", "WORKSPACE", "ELEVATED_ALLOWED"]).optional(),
       fallbacks: z.array(z.object({ runtimeId: z.string(), providerId: z.string().nullish(), model: z.string().nullish(), effort: z.enum(["LOW", "MEDIUM", "HIGH", "MAX"]).nullish() })).default([]),
     }).safeParse(req.body);
@@ -417,6 +418,7 @@ export function registerRoutes(app: FastifyInstance, deps: {
       roleId: body.data.roleId, runtimeId: body.data.runtimeId, providerId: body.data.providerId ?? null,
       model: body.data.model ?? null, effort: body.data.effort ?? null,
       permissionPreset: body.data.permissionPreset,
+      routingMode: body.data.routingMode,
       fallbacks: body.data.fallbacks, source: "MANUAL", reasons: ["set manually in AI Team Composer"],
       updatedAt: new Date().toISOString(),
     });
