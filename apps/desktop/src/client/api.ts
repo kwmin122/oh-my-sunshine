@@ -2,7 +2,9 @@
  * this boundary is the only control surface (spec §1.1, §29). */
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
+  const BASE = location.protocol.startsWith("http") ? "" : "http://127.0.0.1:47710";
+
+const res = await fetch(BASE + path, {
     method,
     headers: { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),

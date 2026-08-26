@@ -11,7 +11,10 @@ export function useLiveEvents(onEvent: (e: EventDTO) => void): boolean {
     const connect = () => {
       if (closed) return;
       const proto = location.protocol === "https:" ? "wss" : "ws";
-      ws = new WebSocket(`${proto}://${location.host}/ws`);
+      const wsBase = location.protocol.startsWith("http")
+      ? `${proto}://${location.host}`
+      : "ws://127.0.0.1:47710";
+    ws = new WebSocket(`${wsBase}/ws`);
       ws.onopen = () => {
         setConnected(true);
         retryMs = 1000;
