@@ -393,6 +393,10 @@ export interface WorkflowNodeDef {
   splitterKey?: "risk_tier";
   childWorkflowId?: WorkflowDefinitionId;
   retryLimit: number;
+  /** User-defined workflows (V3 §18–20): which role executes this step. */
+  roleId?: string;
+  /** What this step should produce — becomes the generated task's objective. */
+  objective?: string;
 }
 
 export interface WorkflowEdgeDef {
@@ -408,6 +412,9 @@ export interface WorkflowDefinition {
   entryNodeId: WorkflowNodeId;
   nodes: WorkflowNodeDef[];
   edges: WorkflowEdgeDef[];
+  /** User-composed workflows (V3 §18) vs. the built-in delivery definition. */
+  origin?: "builtin" | "user";
+  archived?: boolean;
 }
 
 export interface WorkflowInstance {

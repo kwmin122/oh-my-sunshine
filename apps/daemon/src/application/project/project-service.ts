@@ -57,6 +57,8 @@ export interface ProjectServicePorts {
   intentGate: IntentGateService;
   workflow: WorkflowEngine;
   git: GitAdapter;
+  /** Workflow Composer (V3 §18/S4): an applied user workflow drives planning. */
+  workflowComposer?: { activeWorkflowFor(projectId: string): import("@devflow/contracts").WorkflowDefinition | null };
   roles(): AgentRole[];
   scanner: { scan(path: string): Promise<CodebaseSnapshot> };
   tools: { get(id: string): { execute(input: Record<string, unknown>, ctx: { workspaceRoot: string }): Promise<{ ok: boolean; summary: string; output: string | null }> } };
@@ -300,6 +302,12 @@ export class ProjectService {
     const { signalsFromMission } = await import("../../domain/risk/risk-engine.js");
     const repoSnapshot = this.getProject(projectId).repositoryPath ? await this.p.scanner.scan(this.getProject(projectId).repositoryPath!).catch(() => null) : null;
     const signals = signalsFromMission(mission.rawRequest, repoSnapshot);
+    // Workflow Composer (V3 §18/S4): an applied user workflow is the orchestration
+    // source of truth — one task per STEP node, ordered by the composed edges.
+    const composed = this.p.workflowComposer?.activeWorkflowFor(projectId as string);
+    if (composed && composed.nodes.some((n) => n.type === "STEP" && n.roleId)) {
+      return this.planTasksFromWorkflow(projectId as ProjectId, mission.rawRequest, composed, requirements.map((r) => r.id));
+    }
     return this.p.planning.planTasks({
       projectId: projectId as ProjectId,
       goalId: mission.id,
@@ -311,11 +319,83 @@ export class ProjectService {
     });
   }
 
+  /**
+   * Generates the task DAG from an applied Workflow Composer definition (S4):
+   * one task per STEP node, dependencies from the composed edges, topologically
+   * ordered. This is what makes a user workflow change ACTUAL execution order.
+   */
+  private planTasksFromWorkflow(projectId: ProjectId, mission: string, def: import("@devflow/contracts").WorkflowDefinition, requirementIds: string[]): TaskContract[] {
+    const steps = def.nodes.filter((n) => n.type === "STEP" && n.roleId);
+    const byId = new Map(steps.map((n) => [n.id as string, n]));
+    const upstream = new Map<string, string[]>();
+    for (const e of def.edges) {
+      if (byId.has(e.fromNodeId) && byId.has(e.toNodeId)) {
+        upstream.set(e.toNodeId, [...(upstream.get(e.toNodeId) ?? []), e.fromNodeId]);
+      }
+    }
+    const now = new Date().toISOString();
+    const idToTask = new Map<string, TaskContract>();
+    const tasks: TaskContract[] = [];
+    let seq = 0;
+    // Deterministic topo order (DFS from entry); cycle → hard error.
+    const visiting = new Set<string>();
+    const done = new Set<string>();
+    const visit = (nodeId: string): void => {
+      if (done.has(nodeId)) return;
+      if (visiting.has(nodeId)) throw new Error(`[project-service/plan] workflow '${def.name}' has a dependency cycle at '${nodeId}'`);
+      visiting.add(nodeId);
+      for (const up of upstream.get(nodeId) ?? []) visit(up);
+      visiting.delete(nodeId);
+      done.add(nodeId);
+      const node = byId.get(nodeId)!;
+      seq += 1;
+      const deps = (upstream.get(nodeId) ?? []).map((u) => idToTask.get(u)!.id).filter(Boolean);
+      const task: TaskContract = {
+        id: newId("task"),
+        projectId,
+        stableKey: `WF-${String(seq).padStart(2, "0")}`,
+        parentTaskId: null,
+        objective: node.objective ?? `${node.name} (${node.roleId}) — from workflow '${def.name}': ${mission.slice(0, 200)}`,
+        ownerRole: node.roleId! as TaskContract["ownerRole"],
+        status: "READY",
+        riskTier: "NORMAL",
+        dependencyTaskIds: deps,
+        requirementIds,
+        acceptanceCriteriaIds: [],
+        plannedSteps: [],
+        affectedModules: [],
+        requiredEvidenceTypes: ["UNIT_TEST"],
+        requiredReviewTypes: ["SPEC_COMPLIANCE", "CODE_QUALITY"],
+        permissionsNeeded: ["READ_ONLY", "WORKSPACE_WRITE"],
+        blockers: [],
+        handoffNotes: null,
+        verificationCommands: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      idToTask.set(nodeId, task);
+      tasks.push(task);
+      this.p.docs.put("task", task.id, projectId, task);
+      this.p.events.append({ projectId, type: "task.created", entityType: "task", entityId: task.id, actorType: "ENGINE", payload: { stableKey: task.stableKey, workflowNode: nodeId, deps } });
+    };
+    for (const n of steps) visit(n.id as string);
+    this.p.events.append({ projectId, type: "task.ready", entityType: "workflow", entityId: def.id, actorType: "ENGINE", payload: { workflowId: def.id, tasks: tasks.length } });
+    return tasks;
+  }
+
   // ---------- Steps 12–19: execute → verify → review → completion ----------
   async executeTask(taskId: string, runtimeAdapterId = "mock-runtime"): Promise<AgentRun> {
     const task = this.p.docs.require<TaskContract>("task", taskId);
     if (task.status !== "READY" && task.status !== "QUEUED" && task.status !== "BLOCKED") {
       throw new Error(`[project-service/executeTask] task '${task.stableKey}' in status ${task.status} cannot start`);
+    }
+    // Dependency gate (V3 §18/S4): the composed order is enforced by the engine,
+    // not advisory — upstream tasks must reach DONE before this one starts.
+    const notDone = task.dependencyTaskIds.filter((depId) => this.p.docs.get<TaskContract>("task", depId)?.status !== "DONE");
+    if (notDone.length > 0) {
+      throw new Error(
+        `[project-service/executeTask] task '${task.stableKey}' waits on ${notDone.length} upstream task(s) — execute them first`,
+      );
     }
     // System readiness gate (spec Step 0): a required capability missing ⇒ NOT runnable.
     const missingCaps = await this.requiredCapabilitiesMissing(task);

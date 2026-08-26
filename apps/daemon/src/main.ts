@@ -27,6 +27,7 @@ import { ContextCompiler } from "./application/context/context-compiler.js";
 import { CompletionService, EvidenceFreshnessService, VerificationService } from "./application/verification/verification-service.js";
 import { AgentOrchestrator } from "./application/orchestration/agent-orchestrator.js";
 import { HandoffService } from "./application/orchestration/handoff-service.js";
+import { WorkflowComposerService } from "./application/workflow/workflow-composer-service.js";
 import { ApprovalService } from "./application/governance/approval-service.js";
 import { DecisionService } from "./application/governance/decision-service.js";
 import { ResearchService } from "./application/research/research-service.js";
@@ -178,8 +179,10 @@ async function main(): Promise<void> {
   const symbols = new SymbolIntelligenceService(docs, events, config);
   const drift = new DriftDetectionService(docs, events);
 
-  const mobileControl = new MobileControlService(docs, events, {
-    resolveDecision: (decisionId, chosenOption) => {
+  // Workflow Composer (V3 §18/S4): user-defined flow definitions + project binding.
+  const composerWorkflows = new WorkflowComposerService({ docs, events });
+
+  const mobileControl = new MobileControlService(docs, events, {    resolveDecision: (decisionId, chosenOption) => {
       decisions.resolve(decisionId, chosenOption);
       projects.resolveDecisionHook(decisionId, chosenOption);
     },
@@ -231,6 +234,7 @@ async function main(): Promise<void> {
     intentGate,
     workflow,
     git,
+    workflowComposer: composerWorkflows,
     roles: () => roles,
     scanner,
     tools,
@@ -325,6 +329,7 @@ async function main(): Promise<void> {
     mockRuntime: runtimes.mock,
     orchestrator,
     composer,
+    workflowComposer: composerWorkflows,
   });
 
   registerMobilePage(app, {

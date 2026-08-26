@@ -99,7 +99,7 @@ sleep 60
     const projectId = "proj_sd";
     docs.put("project", projectId, null, { id: projectId, name: "SD", repositoryPath: workspaceRoot });
     const now = new Date().toISOString();
-    const beRole = roles.find((r) => r.id.startsWith("role_be_"))!.id;
+    const beRole = (roles.find((r) => r.id === "role_be") ?? roles.find((r) => r.id.startsWith("role_be_"))!).id;
     const task: TaskContract = {
       id: "task_sd" as TaskContract["id"],
       projectId: projectId as TaskContract["projectId"],

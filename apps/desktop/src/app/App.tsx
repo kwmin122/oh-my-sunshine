@@ -9,6 +9,7 @@ import { Inboxes } from "../ui/inbox/Inboxes.js";
 import { EvidenceCenter, TimelineView, SystemReadinessView, ConflictCenter, DiscoveryHistory } from "../ui/evidence-center/EvidenceCenter.js";
 import { AgentOffice } from "../ui/agent-office/AgentOffice.js";
 import { TeamComposer } from "../ui/team/TeamComposer.js";
+import { WorkflowComposer } from "../ui/workflow/WorkflowComposer.js";
 import { CapacityCenter } from "../ui/capacity/CapacityCenter.js";
 import { CanonView } from "../ui/canon/CanonView.js";
 
@@ -19,6 +20,7 @@ const TABS = [
   ["tasks", "Tasks"],
   ["agents", "Agent Office"],
   ["team", "AI Team Composer"],
+  ["workflow", "Workflow Composer"],
   ["inbox", "Inbox"],
   ["evidence", "Evidence"],
   ["timeline", "Timeline"],
@@ -171,6 +173,7 @@ function Shell(): JSX.Element {
             {tab === "tasks" && <TaskBoard projectId={projectId} onChanged={() => void reload()} />}
             {tab === "agents" && <AgentOffice projectId={projectId} />}
             {tab === "team" && <TeamComposer projectId={projectId} onChanged={() => void reload()} />}
+            {tab === "workflow" && <WorkflowComposer projectId={projectId} onChanged={() => void reload()} />}
             {tab === "inbox" && <Inboxes overview={overview} onChanged={() => void reload()} />}
             {tab === "evidence" && <EvidenceCenter projectId={projectId} />}
             {tab === "timeline" && <TimelineView projectId={projectId} />}

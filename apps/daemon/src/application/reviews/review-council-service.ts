@@ -136,10 +136,12 @@ Review strictly and return JSON with findings[] (severity BLOCKER|HIGH|MEDIUM|LO
   }
 }
 
-/** Default role catalog (spec §19). Roles are templates — instantiated only when needed. */
+/** Default role catalog (spec §19). Roles are templates — instantiated only when needed.
+ * Ids are DETERMINISTIC (role_<key>): tasks, bindings, and workflows reference them
+ * across restarts; randomness here would orphan every persisted reference. */
 export function defaultAgentRoles(): AgentRole[] {
   const mk = (id: string, name: string, responsibility: string, preset: AgentRole["defaultPolicyPreset"]): AgentRole => ({
-    id: newId(`role_${id}`),
+    id: `role_${id}` as AgentRole["id"],
     name,
     responsibility,
     defaultSkills: [],

@@ -46,6 +46,16 @@ export function registerRoutes(app: FastifyInstance, deps: {
   mockRuntime: { setAlwaysFail(enabled: boolean): void };
   composer: TeamComposerService;
   orchestrator: { cancelRun(runId: string): Promise<unknown> };
+  workflowComposer?: {
+    create(name: string, nodes: Array<{ key: string; name?: string; roleId: string; objective?: string }>, edges: Array<{ from: string; to: string }>): unknown;
+    list(): unknown[];
+    get(id: string): unknown | null;
+    update(id: string, name: string, nodes: Array<{ key: string; name?: string; roleId: string; objective?: string }>, edges: Array<{ from: string; to: string }>): unknown;
+    archive(id: string): void;
+    applyToProject(projectId: string, workflowId: string): unknown;
+    clearForProject(projectId: string): void;
+    bindingFor(projectId: string): { active: boolean; workflowId: string } | null;
+  };
   tools: { get(id: string): { execute(input: Record<string, unknown>, ctx: { workspaceRoot: string }): Promise<{ ok: boolean; summary: string; output: string | null }> } };
 }): void {
   const { projects } = deps;
@@ -494,6 +504,85 @@ export function registerRoutes(app: FastifyInstance, deps: {
       updatedAt: new Date().toISOString(),
     });
     return { override };
+  });
+
+  // ---- Workflow Composer (V3 §18/S4): user-defined flow definitions ----
+  const NodeInput = z.object({
+    key: z.string().min(1).max(60).regex(/^[a-zA-Z0-9_-]+$/),
+    name: z.string().max(120).optional(),
+    roleId: z.string().min(1).max(80),
+    objective: z.string().max(2000).optional(),
+  });
+  const EdgeInput = z.object({ from: z.string().min(1), to: z.string().min(1) });
+
+  app.get("/api/workflows", async () => {
+    const workflows = deps.workflowComposer?.list() ?? [];
+    return { workflows };
+  });
+
+  app.get("/api/workflows/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const wf = deps.workflowComposer?.get(id);
+    if (!wf) return reply.code(404).send({ error: "unknown workflow" });
+    return { workflow: wf };
+  });
+
+  app.post("/api/workflows", async (req, reply) => {
+    if (!deps.workflowComposer) return reply.code(501).send({ error: "workflow composer unavailable" });
+    const body = z.object({ name: z.string().min(1).max(120), nodes: z.array(NodeInput).min(1).max(20), edges: z.array(EdgeInput).default([]) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid input", detail: body.error.flatten() });
+    try {
+      const workflow = deps.workflowComposer.create(body.data.name, body.data.nodes, body.data.edges);
+      return reply.code(201).send({ workflow });
+    } catch (err) {
+      return reply.code(409).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.put("/api/workflows/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!deps.workflowComposer) return reply.code(501).send({ error: "workflow composer unavailable" });
+    const body = z.object({ name: z.string().min(1).max(120), nodes: z.array(NodeInput).min(1).max(20), edges: z.array(EdgeInput).default([]) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid input", detail: body.error.flatten() });
+    try {
+      const workflow = deps.workflowComposer.update(id, body.data.name, body.data.nodes, body.data.edges);
+      return { workflow };
+    } catch (err) {
+      return reply.code(409).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.delete("/api/workflows/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!deps.workflowComposer) return reply.code(501).send({ error: "workflow composer unavailable" });
+    try {
+      deps.workflowComposer.archive(id);
+      return { archived: true };
+    } catch (err) {
+      return reply.code(404).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.post("/api/projects/:id/workflow/apply", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!deps.workflowComposer) return reply.code(501).send({ error: "workflow composer unavailable" });
+    const body = z.object({ workflowId: z.string().min(1).nullable() }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid input" });
+    try {
+      if (!body.data.workflowId) {
+        deps.workflowComposer.clearForProject(id);
+        return { cleared: true };
+      }
+      return { binding: deps.workflowComposer.applyToProject(id, body.data.workflowId) };
+    } catch (err) {
+      return reply.code(409).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.get("/api/projects/:id/workflow", async (req) => {
+    const { id } = req.params as { id: string };
+    const binding = deps.workflowComposer?.bindingFor(id) ?? null;
+    return { binding, workflow: binding ? deps.workflowComposer!.get(binding.workflowId) : null };
   });
 
   // ---- Safe edit demo/test seam ----

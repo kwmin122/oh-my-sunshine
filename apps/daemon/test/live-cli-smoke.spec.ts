@@ -99,10 +99,8 @@ async function liveHarness(cliId: "claude-code" | "codex-cli" | "opencode", bin:
 
 async function runLiveSmoke(cliId: "claude-code" | "codex-cli", bin: string) {
   const h = await liveHarness(cliId, bin);
-  // Role ids are instantiated with a per-process random suffix (role_be_<rand>) —
-  // resolve the Backend Engineer role from THIS harness's registry; its WORKSPACE
-  // preset grants write access.
-  const beRoleId = (h.roles.find((r) => r.id.startsWith("role_be_")) ?? h.roles[0]!).id;
+  // Role ids are deterministic (role_be); fall back to prefix scan for safety.
+  const beRoleId = (h.roles.find((r) => r.id === "role_be") ?? h.roles.find((r) => r.id.startsWith("role_be_")) ?? h.roles[0]!).id;
   const projectId = `proj_live_${cliId}`;
   h.docs.put("project", projectId, null, { id: projectId, name: `Live ${cliId}`, repositoryPath: h.workspaceRoot });
   const now = new Date().toISOString();
