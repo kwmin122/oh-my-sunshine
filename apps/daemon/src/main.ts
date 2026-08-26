@@ -291,6 +291,7 @@ async function main(): Promise<void> {
     gateway,
     tools,
     mockRuntime: runtimes.mock,
+    orchestrator,
     composer,
   });
 

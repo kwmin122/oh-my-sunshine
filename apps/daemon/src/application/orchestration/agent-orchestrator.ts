@@ -109,7 +109,37 @@ export class AgentOrchestrator {
       contextSnapshotId: null,
     };
     this.ports.docs.put("agent_run", run.id, run.projectId, run);
-    return this.executeLoop(run, task, effectiveAdapter, undefined, modelHint);
+    // Handoff Packet (§V3-6): when the resolved runtime differs from the previous
+      // attempt, carry forward durable outcome context instead of restarting cold.
+      const priorRun = this.ports.docs.list<AgentRun>("agent_run", task.projectId)
+        .filter((r) => r.taskId === task.id && r.status === "FAILED")
+        .sort((a, b) => b.attempt - a.attempt)[0];
+      const handoff = priorRun
+        ? `Handoff Packet\nTask: ${task.objective}\nPrevious runtime attempt failed: ${priorRun.failureReason ?? "unknown"}\nPrior summary: ${priorRun.summary ?? "(none)"}\nContinue from this state.`
+        : undefined;
+      return this.executeLoop(run, task, effectiveAdapter, handoff, modelHint);
+  }
+
+  /** User cancellation (§39): kill child process, checkpoint-free fail, release claim. */
+  async cancelRun(runId: string): Promise<AgentRun> {
+    const run = this.ports.docs.require<AgentRun>("agent_run", runId);
+    if (!["RUNNING", "WAITING_APPROVAL", "WAITING_DECISION"].includes(run.status)) {
+      throw new Error(`[orchestrator/cancel] run '${runId}' in status ${run.status} cannot be cancelled`);
+    }
+    const task = run.taskId ? this.ports.docs.get<TaskContract>("task", run.taskId) : undefined;
+    const runtime = this.runtimes.get(run.runtimeConfigId.replace("runtime_", ""));
+    if (run.sessionId) await runtime.stop({ sessionId: run.sessionId }).catch(() => undefined);
+    const now = new Date().toISOString();
+    run.status = "FAILED";
+    run.failureReason = "CANCELLED_BY_USER";
+    run.endedAt = now;
+    this.ports.docs.put("agent_run", run.id, run.projectId, run);
+    this.emit(run.projectId, "agent.run_cancelled", task?.id ?? null, { runId });
+    if (task) {
+      const released: TaskContract = { ...task, status: "READY", updatedAt: now };
+      this.ports.docs.put("task", released.id, released.projectId, released);
+    }
+    return run;
   }
 
   /** Resumes a run parked on approval/decision/provider backoff after external unblock. */

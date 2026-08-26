@@ -45,6 +45,7 @@ export function registerRoutes(app: FastifyInstance, deps: {
   gateway: ActionGateway;
   mockRuntime: { setAlwaysFail(enabled: boolean): void };
   composer: TeamComposerService;
+  orchestrator: { cancelRun(runId: string): Promise<unknown> };
   tools: { get(id: string): { execute(input: Record<string, unknown>, ctx: { workspaceRoot: string }): Promise<{ ok: boolean; summary: string; output: string | null }> } };
 }): void {
   const { projects } = deps;
@@ -206,6 +207,15 @@ export function registerRoutes(app: FastifyInstance, deps: {
       return await projects.reviewAndMaybeComplete(taskId);
     } catch (err) {
       return reply.code(500).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.post("/api/runs/:runId/cancel", async (req, reply) => {
+    const { runId } = req.params as { runId: string };
+    try {
+      return { run: await deps.orchestrator.cancelRun(runId) };
+    } catch (err) {
+      return reply.code(409).send({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
