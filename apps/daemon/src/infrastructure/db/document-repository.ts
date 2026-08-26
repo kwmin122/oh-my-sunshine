@@ -44,6 +44,9 @@ export const DOC_KINDS = [
   "team_binding",
   "team_task_override",
   "team_preset_my_team",
+  "handoff_packet",
+  "workflow_preset",
+  "custom_role",
 ] as const;
 
 export type DocKind = (typeof DOC_KINDS)[number];

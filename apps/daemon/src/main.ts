@@ -26,6 +26,7 @@ import { ReviewCouncilService, defaultAgentRoles } from "./application/reviews/r
 import { ContextCompiler } from "./application/context/context-compiler.js";
 import { CompletionService, EvidenceFreshnessService, VerificationService } from "./application/verification/verification-service.js";
 import { AgentOrchestrator } from "./application/orchestration/agent-orchestrator.js";
+import { HandoffService } from "./application/orchestration/handoff-service.js";
 import { ApprovalService } from "./application/governance/approval-service.js";
 import { DecisionService } from "./application/governance/decision-service.js";
 import { ResearchService } from "./application/research/research-service.js";
@@ -144,8 +145,10 @@ async function main(): Promise<void> {
       decisions,
       tools,
       config,
+      handoff: new HandoffService({ docs, events, git }),
       composer: {
         resolveForTask: (projectId, taskId, ownerRoleId, runOverride) => composer.resolveForTask(projectId, taskId, ownerRoleId, runOverride),
+        resolveDetailed: (projectId, taskId, ownerRoleId, runOverride) => composer.resolveDetailed(projectId, taskId, ownerRoleId, runOverride),
         listRuntimeIds: () => runtimes.listIds(),
       },
     },

@@ -18,6 +18,7 @@ import { DecisionService } from "../src/application/governance/decision-service.
 import { defaultAgentRoles } from "../src/application/reviews/review-council-service.js";
 import { TeamComposerService, buildCatalog } from "../src/application/team/team-composer-service.js";
 import { AgentOrchestrator } from "../src/application/orchestration/agent-orchestrator.js";
+import { HandoffService } from "../src/application/orchestration/handoff-service.js";
 
 /**
  * S1 behavior evidence (V3-S1): a real child process — not the mock runtime —
@@ -53,7 +54,7 @@ interface Harness {
   workspaceRoot: string;
 }
 
-function harness(opts?: { cliBin?: string; cliKind?: "claude-code" | "codex-cli" | "opencode"; registerCli?: boolean; cliProbe?: (bin: string) => boolean }): Harness {
+function harness(opts?: { cliBin?: string; cliKind?: "claude-code" | "codex-cli" | "opencode"; registerCli?: boolean; cliProbe?: (bin: string) => boolean; extraBins?: Array<{ id: string; bin: string; kind: "claude-code" | "codex-cli" | "opencode" }> }): Harness {
   const dataDir = makeTempDir("devflow-s1-data-");
   const workspaceRoot = makeTempDir("devflow-s1-ws-");
   const db = openDatabase({ dataDir } as never);
@@ -64,6 +65,9 @@ function harness(opts?: { cliBin?: string; cliKind?: "claude-code" | "codex-cli"
   if (opts?.registerCli && opts.cliBin && opts.cliKind) {
     // Register exactly like main.ts does post-discovery: catalog id → binary.
     registry.registerCliIfAvailable(opts.cliKind, opts.cliBin, opts.cliKind, true);
+  }
+  for (const extra of opts?.extraBins ?? []) {
+    registry.registerCliIfAvailable(extra.id, extra.bin, extra.kind, true);
   }
   // Wire the normalized runtime event stream into the EventStore exactly like main.ts.
   registry.setEventSink((e) => {
@@ -95,6 +99,7 @@ function harness(opts?: { cliBin?: string; cliKind?: "claude-code" | "codex-cli"
       decisions,
       tools,
       config,
+      handoff: new HandoffService({ docs, events }),
       composer: {
         resolveForTask: (p, t, r, o) => composer.resolveForTask(p as string, t as string, r as string, o),
         resolveDetailed: (p, t, r, o) => composer.resolveDetailed(p as string, t as string, r as string, o),
@@ -270,6 +275,101 @@ sleep 60
     expect(storedTask.status).toBe("READY");
     expect(h.events.listByProject(projectId as never).some((e) => e.type === "agent.run_cancelled")).toBe(true);
   }, 45_000);
+});
+
+describe("S2: handoff on runtime switch", () => {
+  it("runtime A fails → switch to runtime B → handoff generated, consumed, and received by B", async () => {
+    // Runtime A: fails instantly as AUTH_EXPIRED (providerFatal — no retries).
+    const failingBin = writeExecutableScript(
+      "failing-cli",
+      `cat > /dev/null
+echo '{"type":"system","subtype":"init","session_id":"a1","tools":[]}' >&2
+echo 'error: not logged in' >&2
+exit 1
+`,
+    );
+    // Runtime B: dumps its full context packet to disk (proving it RECEIVED the
+    // handoff), completes the task normally.
+    const workingBin = writeExecutableScript(
+      "working-claude",
+      `cat > received-context.md
+echo '{"type":"system","subtype":"init","session_id":"b1","tools":[]}'
+printf 'done by b\\n' > implemented-by-cli.txt
+echo '{"type":"result","subtype":"success","is_error":false,"result":"implementation complete"}'
+`,
+    );
+    const h = harness({
+      cliBin: failingBin,
+      cliKind: "claude-code",
+      registerCli: true,
+      cliProbe: () => true,
+      extraBins: [{ id: "codex-cli", bin: workingBin, kind: "claude-code" }],
+    });
+    const projectId = "proj_s2";
+    h.docs.put("project", projectId, null, { id: projectId, name: "S2", repositoryPath: h.workspaceRoot });
+    const task = makeTask(projectId);
+    h.docs.put("task", task.id, task.projectId, task);
+    h.composer.setTaskOverride(projectId, {
+      taskId: task.id, roleId: "role_backend", runtimeId: "claude-code", updatedAt: new Date().toISOString(),
+    });
+
+    // Attempt 1 on the failing runtime.
+    const run1 = await h.orch.startTaskRun(task, "mock-runtime");
+    expect(run1.status).toBe("FAILED");
+    expect(run1.failureReason).toContain("AUTH_EXPIRED");
+    const storedTaskAfterFail = h.docs.get<TaskContract>("task", task.id)!;
+    expect(["READY", "BLOCKED"]).toContain(storedTaskAfterFail.status);
+
+    // User switches the task override to runtime B.
+    h.composer.setTaskOverride(projectId, {
+      taskId: task.id, roleId: "role_backend", runtimeId: "codex-cli",
+      reason: "switch after failure", updatedAt: new Date().toISOString(),
+    });
+
+    // Attempt 2 must be a HANDOFF, not a cold restart.
+    const run2 = await h.orch.startTaskRun(storedTaskAfterFail.status === "BLOCKED" ? storedTaskAfterFail : { ...task, status: "READY" }, "mock-runtime");
+    expect(run2.status).toBe("SUCCEEDED");
+
+    const evs = h.events.listByProject(projectId as never);
+    const generated = evs.find((e) => e.type === "agent.handoff_generated");
+    const consumed = evs.find((e) => e.type === "agent.handoff_consumed");
+    expect(generated, "handoff_generated event").toBeTruthy();
+    expect(consumed, "handoff_consumed event").toBeTruthy();
+    const genPayload = generated!.payload as { from: string; to: string; failureKind: string };
+    expect(genPayload.from).toBe("claude-code");
+    expect(genPayload.to).toBe("codex-cli");
+    expect(genPayload.failureKind).toBe("AUTH_EXPIRED");
+
+    // Packet persisted with durable fields.
+    const packets = h.docs.list<{ previousRuntimeId: string; nextRuntimeId: string; lastFailureKind: string | null }>("handoff_packet", projectId);
+    expect(packets.length).toBe(1);
+    expect(packets[0]!.previousRuntimeId).toBe("claude-code");
+    expect(packets[0]!.nextRuntimeId).toBe("codex-cli");
+    expect(packets[0]!.lastFailureKind).toBe("AUTH_EXPIRED");
+
+    // Runtime B actually received the handoff content in its context packet.
+    const received = readFileSync(join(h.workspaceRoot, "received-context.md"), "utf8");
+    expect(received).toContain("# Handoff Packet");
+    expect(received).toContain(task.objective);
+    expect(received).toContain("AUTH_EXPIRED");
+    expect(received).toContain("claude-code");
+    // And completed the work.
+    expect(existsSync(join(h.workspaceRoot, "implemented-by-cli.txt"))).toBe(true);
+  }, 45_000);
+
+  it("first attempt generates no handoff (nothing to hand over)", async () => {
+    const bin = writeExecutableScript("claude", FAKE_CLAUDE_BODY);
+    const h = harness({ cliBin: bin, cliKind: "claude-code", registerCli: true });
+    const projectId = "proj_s2_first";
+    h.docs.put("project", projectId, null, { id: projectId, name: "F", repositoryPath: h.workspaceRoot });
+    const task = makeTask(projectId);
+    h.docs.put("task", task.id, task.projectId, task);
+    h.composer.setTaskOverride(projectId, {
+      taskId: task.id, roleId: "role_backend", runtimeId: "claude-code", updatedAt: new Date().toISOString(),
+    });
+    await h.orch.startTaskRun(task, "mock-runtime");
+    expect(h.events.listByProject(projectId as never).some((e) => e.type === "agent.handoff_generated")).toBe(false);
+  }, 30_000);
 });
 
 function pgrepAll(pattern: string): string[] {

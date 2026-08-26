@@ -20,6 +20,7 @@ import type { ActionGateway } from "../gateway/action-gateway.js";
 import type { ContextCompiler, CompiledContext } from "../context/context-compiler.js";
 import type { CompletionService } from "../verification/verification-service.js";
 import type { DecisionService } from "../governance/decision-service.js";
+import type { HandoffService } from "./handoff-service.js";
 
 const log = createLogger("agent-orchestrator");
 
@@ -41,6 +42,8 @@ export interface OrchestratorPorts {
     DevFlowConfig,
     "maxRunAttempts" | "escalationAfterConsecutiveFailures" | "stallThresholdMs" | "approvalGraceMultiplier" | "providerBackoffInitialMs" | "providerBackoffMaxMs"
   >;
+  /** V3 §17 handoff builder (S2). Optional for backward-compatible test harnesses. */
+  handoff?: HandoffService;
 }
 
 export interface RuntimeRegistryPort {
@@ -142,15 +145,37 @@ export class AgentOrchestrator {
       contextSnapshotId: null,
     };
     this.ports.docs.put("agent_run", run.id, run.projectId, run);
-    // Handoff Packet (§V3-6): when the resolved runtime differs from the previous
-      // attempt, carry forward durable outcome context instead of restarting cold.
-      const priorRun = this.ports.docs.list<AgentRun>("agent_run", task.projectId)
-        .filter((r) => r.taskId === task.id && r.status === "FAILED")
-        .sort((a, b) => b.attempt - a.attempt)[0];
-      const handoff = priorRun
-        ? `Handoff Packet\nTask: ${task.objective}\nPrevious runtime attempt failed: ${priorRun.failureReason ?? "unknown"}\nPrior summary: ${priorRun.summary ?? "(none)"}\nContinue from this state.`
-        : undefined;
-      return this.executeLoop(run, task, effectiveAdapter, handoff, modelHint);
+    // Handoff Packet (§V3-17 / S2): when a previous attempt failed, carry durable
+    // outcome context into the new runtime — objective, plan, diffs, failure
+    // taxonomy, revision. Runtime switches are handoffs, not cold restarts.
+    let handoffMarkdown: string | undefined;
+    const hadPriorFailure = this.ports.docs
+      .list<AgentRun>("agent_run", task.projectId)
+      .some((r) => r.taskId === task.id && r.status === "FAILED" && r.id !== run.id);
+    if (hadPriorFailure && this.ports.handoff) {
+      const project = this.ports.docs.get<{ repositoryPath: string | null }>("project", task.projectId);
+      const packet = await this.ports.handoff.buildForRetry(
+        task,
+        effectiveAdapter,
+        project?.repositoryPath ?? process.cwd(),
+        "retry after failed attempt",
+      ).catch(() => null);
+      if (packet) {
+        this.emit(task.projectId, "agent.handoff_generated", task.id, {
+          runId: run.id,
+          from: packet.previousRuntimeId,
+          to: packet.nextRuntimeId,
+          reason: packet.handoffReason,
+          failureKind: packet.lastFailureKind,
+          changedFiles: packet.changedFiles.length,
+        });
+        handoffMarkdown = this.ports.handoff.renderMarkdown(packet);
+      }
+    }
+    return this.executeLoop(run, task, effectiveAdapter, undefined, modelHint, {
+      handoffConsumed: Boolean(handoffMarkdown),
+      handoffMarkdown,
+    });
   }
 
   /** User cancellation (§39): kill child process, checkpoint-free fail, release claim. */
@@ -189,7 +214,7 @@ export class AgentOrchestrator {
     await this.executeLoop(revived, task, adapterIdFromRuntimeConfig(revived.runtimeConfigId), observation);
   }
 
-  private async executeLoop(initialRun: AgentRun, task: TaskContract, runtimeAdapterId: string, initialObservation?: string, modelHint?: RuntimeStartInput["modelHint"]): Promise<AgentRun> {
+  private async executeLoop(initialRun: AgentRun, task: TaskContract, runtimeAdapterId: string, initialObservation?: string, modelHint?: RuntimeStartInput["modelHint"], opts?: { handoffConsumed?: boolean; handoffMarkdown?: string }): Promise<AgentRun> {
     const project = this.ports.docs.require<{ id: string; repositoryPath: string | null }>("project", task.projectId);
     const workspaceRoot = project.repositoryPath ?? process.cwd();
     const role = this.roles.role(task.ownerRole);
@@ -197,6 +222,11 @@ export class AgentOrchestrator {
 
     // Minimum-sufficient context packet (spec §10) — never the raw transcript.
     const compiled: CompiledContext = this.ports.contextCompiler.compile({ role, task, workspaceRoot });
+    // Handoff (V3 §17): the next runtime resumes from durable facts appended to
+    // its brief — not from chat memory, not from a cold restart.
+    const briefMarkdown = opts?.handoffMarkdown
+      ? `${compiled.markdown}\n\n---\n\n${opts.handoffMarkdown}`
+      : compiled.markdown;
     this.ports.events.append({
       projectId: task.projectId,
       type: "agent.context_compiled",
@@ -229,7 +259,7 @@ export class AgentOrchestrator {
     const handle = await runtime.start({
       runId: run.id,
       taskId: task.id,
-      contextPacketMarkdown: compiled.markdown,
+      contextPacketMarkdown: briefMarkdown,
       permissionPreset: role.defaultPolicyPreset,
       workingDirectory: workspaceRoot,
       modelHint,
@@ -238,6 +268,9 @@ export class AgentOrchestrator {
     // the actual child process, not a document id (S1 regression evidence).
     run = { ...run, sessionId: handle.sessionId };
     this.ports.docs.put("agent_run", run.id, run.projectId, run);
+    if (opts?.handoffConsumed) {
+      this.emit(task.projectId, "agent.handoff_consumed", task.id, { runId: run.id, runtime: runtimeAdapterId });
+    }
 
     let observation = initialObservation ?? "run started";
     let consecutiveProviderFailures = 0;

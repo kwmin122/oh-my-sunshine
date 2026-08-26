@@ -54,3 +54,29 @@ export interface UnsupportedSetting {
   setting: "effort" | "model" | "provider" | "tools" | "skills";
   reason: string;
 }
+
+/**
+ * Runtime handoff packet (V3 §17): durable context transferred when a task's
+ * execution moves from one runtime to another. Cold restarts are not handoffs;
+ * every field here exists so the next runtime resumes instead of re-deciding.
+ */
+export interface HandoffPacket {
+  projectId: string;
+  taskId: string;
+  objective: string;
+  /** Acceptance criteria ids bound to the task contract. */
+  acceptanceCriteriaIds: string[];
+  currentPlan: string[];
+  completedWorkSummary: string | null;
+  changedFiles: string[];
+  diffSummary: string | null;
+  lastFailureReason: string | null;
+  lastFailureKind: RuntimeFailureKind | null;
+  evidenceReferences: string[];
+  currentRevision: string | null;
+  remainingWork: string[];
+  previousRuntimeId: string | null;
+  nextRuntimeId: string;
+  handoffReason: string;
+  createdAt: string;
+}
