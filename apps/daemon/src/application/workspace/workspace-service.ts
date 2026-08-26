@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import type { GitAdapter } from "@devflow/contracts";
 import { assertPathInsideWorkspace } from "../../lib/path-guard.js";
@@ -30,6 +30,24 @@ export interface WorkspaceFileContent {
 const MAX_READ_BYTES = 512_000;
 const IGNORED_DIRS = new Set([".git", "node_modules", "target", "dist", ".next", ".venv", "__pycache__"]);
 
+/** Symlink defense (review pass-3): lexical confinement is not enough — a
+ * symlink inside the repo pointing outside would escape readFileSync. Resolve
+ * the REAL target and re-assert containment. Nonexistent paths pass through
+ * (nothing to resolve yet). */
+function assertSymlinkSafeWorkspace(root: string, abs: string): string {
+  try {
+    const real = realpathSync(abs);
+    const realRoot = realpathSync(root);
+    if (real !== realRoot && !real.startsWith(realRoot + sep)) {
+      throw new Error("[workspace] path resolves outside the workspace via symlink — blocked");
+    }
+    return real;
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("symlink")) throw err;
+    return abs; // ENOENT — nothing to resolve
+  }
+}
+
 export class WorkspaceService {
   constructor(
     private readonly projects: Pick<ProjectService, "getProject">,
@@ -38,16 +56,19 @@ export class WorkspaceService {
 
   private resolve(projectId: string): { workspaceRoot: string; absolute: (rel: string) => string } {
     const project = this.projects.getProject(projectId);
-    const workspaceRoot = project.repositoryPath;
-    if (!workspaceRoot) throw new Error(`[workspace] project '${projectId}' has no repository attached`);
-    return {
-      workspaceRoot,
-      absolute: (rel: string) => {
-        // assertPathInsideWorkspace returns the validated ABSOLUTE path.
-        const abs = assertPathInsideWorkspace(workspaceRoot, rel);
-        return abs;
-      },
+    const rawRoot = project.repositoryPath;
+    if (!rawRoot) throw new Error(`[workspace] project '${projectId}' has no repository attached`);
+    // Canonicalize the root once (macOS /var→/private/var etc.) so every
+    // relative-path computation stays inside ONE consistent base.
+    let workspaceRoot = rawRoot;
+    try {
+      workspaceRoot = realpathSync(rawRoot);
+    } catch { /* missing dir — surface original error at first fs op */ }
+    const absolute = (rel: string): string => {
+      // assertPathInsideWorkspace returns the validated ABSOLUTE path.
+      return assertSymlinkSafeWorkspace(workspaceRoot, assertPathInsideWorkspace(workspaceRoot, rel));
     };
+    return { workspaceRoot, absolute };
   }
 
   async listTree(projectId: string, subpath = ""): Promise<{ path: string; entries: WorkspaceEntry[] }> {

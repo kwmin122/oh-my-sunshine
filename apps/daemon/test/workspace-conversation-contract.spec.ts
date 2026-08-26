@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelProvider } from "@devflow/contracts";
@@ -93,6 +93,18 @@ describe("V4 §2–4: workspace filesystem + git surfaces", () => {
     await expect(ws.readFile("p", "../../etc/passwd")).rejects.toThrow(/escapes workspace root/);
     await expect(ws.listTree("p", "/etc")).rejects.toThrow();
     await expect(ws.readFile("p", ".")).rejects.toThrow(/is a directory/);
+  });
+
+  it("blocks symlink escape — a link inside the repo pointing outside cannot be read (review pass-3)", async () => {
+    const repo = makeGitRepo();
+    const secretDir = makeTempDir("devflow-secret-");
+    const secretFile = join(secretDir, "secret.txt");
+    writeFileSync(secretFile, "TOP_SECRET");
+    symlinkSync(secretFile, join(repo, "innocent-link"));
+    const projects = { getProject: () => ({ repositoryPath: repo }) } as never;
+    const { CliGitAdapter } = await import("../src/plugins/tools/core-tools.js");
+    const ws = new WorkspaceService(projects, new CliGitAdapter());
+    await expect(ws.readFile("p", "innocent-link")).rejects.toThrow(/symlink/);
   });
 
   it("search finds files by name substring", async () => {
