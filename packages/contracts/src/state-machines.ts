@@ -60,8 +60,7 @@ export function isTaskTransitionLegal(from: TaskStatus, to: TaskStatus): boolean
 }
 
 // ---- Evidence state machine (freshness-aware) ----
-export const EvidenceState = z.enum(["MISSING", "RUNNING", "PASS_FRESH", "PASS_STALE", "FAIL"]);
-export type EvidenceState = z.infer<typeof EvidenceState>;
+export const EvidenceState = z.enum(["MISSING", "RUNNING", "PASS_FRESH", "PASS_STALE", "FAIL"]);export type EvidenceState = z.infer<typeof EvidenceState>;
 
 // ---- Decision state machine ----
 export const DecisionStatus = z.enum(["OPEN", "ANSWERED", "SUPERSEDED", "CANCELLED"]);
@@ -230,3 +229,48 @@ export type RecommendationSource = z.infer<typeof RecommendationSource>;
 // ---- Conflict ----
 export const ConflictStatus = z.enum(["OPEN", "RESOLVED", "ACCEPTED"]);
 export type ConflictStatus = z.infer<typeof ConflictStatus>;
+
+// ---- Terminal session (V4 Workspace / S10) ----
+export const TERMINAL_STATES = [
+  "CREATED",
+  "STARTING",
+  "RUNNING",
+  "WAITING",
+  "EXITED",
+  "FAILED",
+  "CANCELLED",
+] as const;
+export type TerminalStatus = (typeof TERMINAL_STATES)[number];
+
+export const TERMINAL_TRANSITIONS: Readonly<Record<TerminalStatus, readonly TerminalStatus[]>> = {
+  CREATED: ["STARTING", "CANCELLED", "FAILED"],
+  STARTING: ["RUNNING", "FAILED", "CANCELLED"],
+  RUNNING: ["WAITING", "EXITED", "FAILED", "CANCELLED"],
+  WAITING: ["RUNNING", "EXITED", "FAILED", "CANCELLED"],
+  EXITED: [],
+  FAILED: [],
+  CANCELLED: [],
+};
+
+export function isTerminalTransitionLegal(from: TerminalStatus, to: TerminalStatus): boolean {
+  return TERMINAL_TRANSITIONS[from].includes(to);
+}
+
+// ---- Conversation message classification (V4 §8) ----
+export const CONVERSATION_INTENTS = [
+  "QUESTION",
+  "TASK_INSTRUCTION",
+  "TASK_REFINEMENT",
+  "REQUIREMENT_CHANGE",
+  "NEW_REQUIREMENT",
+  "SCOPE_CHANGE",
+  "RUNTIME_CHANGE",
+  "WORKFLOW_CHANGE",
+  "DECISION",
+  "APPROVAL",
+  "CANCEL",
+  "PAUSE",
+  "RESUME",
+  "GENERAL_CHAT",
+] as const;
+export type ConversationIntent = (typeof CONVERSATION_INTENTS)[number];

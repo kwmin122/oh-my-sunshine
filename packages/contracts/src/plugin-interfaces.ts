@@ -97,6 +97,10 @@ export interface GitAdapter {
   changedFiles(path: string): Promise<string[]>;
   diffSummary(path: string): Promise<string>;
   listBranches(path: string): Promise<string[]>;
+  /** Unified diff of the working tree vs a base (default HEAD) — Diff Viewer. */
+  rawDiff(path: string, base?: string | null): Promise<string>;
+  /** Commit history touching one file — File Viewer "history" panel. */
+  fileLog(path: string, filePath: string, limit?: number): Promise<Array<{ hash: string; subject: string; author: string; date: string }>>;
 }
 
 export interface CodebaseSnapshot {

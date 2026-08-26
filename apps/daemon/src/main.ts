@@ -48,6 +48,10 @@ import { SymbolIntelligenceService } from "./services/code-intelligence/symbol-i
 import { DriftDetectionService } from "./services/drift/drift-detection-service.js";
 import { registerRoutes } from "./api/routes.js";
 import { registerMobilePage } from "./api/mobile-page.js";
+import { WorkspaceService } from "./application/workspace/workspace-service.js";
+import { TerminalService } from "./application/terminal/terminal-service.js";
+import { ConversationService } from "./application/conversation/conversation-service.js";
+import { PreCodeContractService } from "./application/discovery/pre-code-contract-service.js";
 
 const log = createLogger("main");
 
@@ -315,6 +319,32 @@ async function main(): Promise<void> {
     workflow.registerStepExecutor(stepName, async () => ({ done: true }));
   }
 
+  // ---- Development Workspace services (V4/S10) + Pre-Code Contract (V5/S11) ----
+  const workspace = new WorkspaceService(projects, git);
+  let wsBroadcast: (message: Record<string, unknown>) => void = () => undefined;
+  const terminals = new TerminalService(
+    ({ projectId, type, entityType, entityId, actorType, payload }) => {
+      events.append({ projectId: projectId as never, type: type as never, entityType: entityType as never, entityId, actorType, payload });
+    },
+    (message) => wsBroadcast(message),
+  );
+  const conversation = new ConversationService({ docs, events, provider: providers.getDefault() });
+  const contract = new PreCodeContractService({
+    docs,
+    events,
+    projects,
+    repoFacts: async (pid) => {
+      const project = projects.getProject(pid);
+      const snap = project.repositoryPath ? await scanner.scan(project.repositoryPath).catch(() => null) : null;
+      return {
+        languages: snap?.languages.map((l) => l.name) ?? [],
+        frameworks: snap?.frameworks ?? [],
+        testCommand: snap?.testCommand ?? null,
+        buildCommand: snap?.buildCommand ?? null,
+      };
+    },
+  });
+
   // ---- HTTP + WS server ----
   const app = Fastify({ logger: false });
   await app.register(cors, { origin: true });
@@ -340,6 +370,11 @@ async function main(): Promise<void> {
       if (socket.readyState === 1) socket.send(JSON.stringify(event));
     }
   });
+  wsBroadcast = (message) => {
+    for (const socket of sockets) {
+      if (socket.readyState === 1) socket.send(JSON.stringify(message));
+    }
+  };
 
   app.get("/api/runtimes/discover", async () => {
     discovered = await discoverRuntimes();
@@ -370,6 +405,10 @@ async function main(): Promise<void> {
     orchestrator,
     composer,
     workflowComposer: composerWorkflows,
+    workspace,
+    terminals,
+    conversation,
+    contract,
   });
 
   registerMobilePage(app, {
@@ -412,6 +451,8 @@ async function main(): Promise<void> {
         try { safeEdit.release(lease.id); } catch { /* keep draining */ }
       }
     }
+    // Kill every live terminal session — no shell outlives the daemon.
+    for (const t of terminals.list()) terminals.kill(t.id);
     // Stop the HTTP server, audit completion, checkpoint WAL into the main DB
     // file, then close cleanly (review R13: complete-event precedes close).
     await app.close().catch(() => undefined);

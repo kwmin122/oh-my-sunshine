@@ -3,6 +3,7 @@
  * Provider-native events are mapped onto this shape; raw provider events may be
  * preserved alongside for debug/audit. UNKNOWN never gets guessed into something else.
  */
+import type { ConversationIntent, TerminalStatus } from "./state-machines.js";
 
 /** Failure taxonomy (V3 §16). Classifiers must stay honest — no reclassifying. */
 export type RuntimeFailureKind =
@@ -78,5 +79,37 @@ export interface HandoffPacket {
   previousRuntimeId: string | null;
   nextRuntimeId: string;
   handoffReason: string;
+  createdAt: string;
+}
+
+// ---- Integrated terminal (V4 Workspace / S10) ----
+export type TerminalSessionType = "USER" | "AGENT" | "TEST" | "BUILD";
+
+/** A real shell process owned by the daemon for one project workspace.
+ * USER terminals are the human's own shell (audit-tagged, gateway-free by design);
+ * AGENT/TEST/BUILD terminals capture runtime/test activity. */
+export interface TerminalSession {
+  id: string;
+  projectId: string;
+  type: TerminalSessionType;
+  cwd: string;
+  shell: string;
+  pid: number | null;
+  status: TerminalStatus;
+  startedAt: string;
+  endedAt: string | null;
+  exitCode: number | null;
+}
+
+// ---- Continuous conversation (V4 §7–8) ----
+export interface ConversationMessage {
+  id: string;
+  projectId: string;
+  role: "USER" | "LEAD" | "SYSTEM";
+  text: string;
+  /** Set on USER messages after deterministic classification (§8). */
+  classifiedAs: ConversationIntent | null;
+  /** Structured effects the message triggered, for audit + UI projection. */
+  effects: string[];
   createdAt: string;
 }

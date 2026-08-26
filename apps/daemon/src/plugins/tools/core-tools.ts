@@ -152,4 +152,30 @@ export class CliGitAdapter implements GitAdapter {
       return [];
     }
   }
+  async rawDiff(path: string, base: string | null = null): Promise<string> {
+    try {
+      const { stdout } = await execFileAsync("git", ["diff", base ?? "HEAD", "--"], { cwd: path, timeout: 30_000, maxBuffer: 16 * 1024 * 1024 });
+      return stdout;
+    } catch {
+      return "";
+    }
+  }
+  async fileLog(path: string, filePath: string, limit = 20): Promise<Array<{ hash: string; subject: string; author: string; date: string }>> {
+    try {
+      const { stdout } = await execFileAsync(
+        "git",
+        ["log", `--max-count=${limit}`, "--pretty=format:%h%x1f%s%x1f%an%x1f%aI", "--", filePath],
+        { cwd: path, timeout: 15_000 },
+      );
+      return stdout
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const [hash = "", subject = "", author = "", date = ""] = line.split("\x1f");
+          return { hash, subject, author, date };
+        });
+    } catch {
+      return [];
+    }
+  }
 }

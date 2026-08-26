@@ -47,6 +47,9 @@ export const DOC_KINDS = [
   "handoff_packet",
   "workflow_preset",
   "custom_role",
+  "conversation_message",
+  "terminal_session",
+  "pre_code_contract",
 ] as const;
 
 export type DocKind = (typeof DOC_KINDS)[number];

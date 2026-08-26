@@ -56,6 +56,31 @@ export function registerRoutes(app: FastifyInstance, deps: {
     clearForProject(projectId: string): void;
     bindingFor(projectId: string): { active: boolean; workflowId: string } | null;
   };
+  /** V4/S10 Development Workspace */
+  workspace?: {
+    listTree(projectId: string, subpath?: string): Promise<{ path: string; entries: Array<{ name: string; path: string; type: "file" | "dir"; size: number | null; gitStatus: string | null }> }>;
+    readFile(projectId: string, filePath: string): Promise<{ path: string; content: string; truncated: boolean; sizeBytes: number; revision: string | null }>;
+    searchFiles(projectId: string, query: string, limit?: number): Promise<Array<{ name: string; path: string; type: "file" | "dir"; size: number | null; gitStatus: string | null }>>;
+    diff(projectId: string, base?: string | null): Promise<{ base: string; diff: string }>;
+    statusSummary(projectId: string): Promise<{ revision: string | null; changedFiles: Array<{ path: string; status: string }> }>;
+    fileHistory(projectId: string, filePath: string, limit?: number): Promise<Array<{ hash: string; subject: string; author: string; date: string }>>;
+  };
+  terminals?: {
+    list(projectId?: string): Array<{ id: string; projectId: string; type: string; status: string; pid: number | null; startedAt: string }>;
+    get(id: string): { id: string; status: string } | null;
+    create(projectId: string, type: "USER" | "AGENT" | "TEST" | "BUILD", cwd: string): { id: string; status: string };
+    write(id: string, data: string): boolean;
+    kill(id: string): boolean;
+    outputSince(id: string, afterSeq: number): { chunks: Array<{ seq: number; data: string; stream: string }>; latestSeq: number };
+  };
+  conversation?: {
+    handleUserMessage(projectId: string, text: string): Promise<{ message: { id: string; classifiedAs: string | null; effects: string[] }; reply: { id: string; text: string } }>;
+    history(projectId: string): Array<{ id: string; role: string; text: string; classifiedAs: string | null; effects: string[]; createdAt: string }>;
+  };
+  contract?: {
+    refresh(projectId: string): Promise<unknown>;
+    get(projectId: string): unknown | null;
+  };
   tools: { get(id: string): { execute(input: Record<string, unknown>, ctx: { workspaceRoot: string }): Promise<{ ok: boolean; summary: string; output: string | null }> } };
 }): void {
   const { projects } = deps;
@@ -629,6 +654,149 @@ export function registerRoutes(app: FastifyInstance, deps: {
     const { id } = req.params as { id: string };
     const binding = deps.workflowComposer?.bindingFor(id) ?? null;
     return { binding, workflow: binding ? deps.workflowComposer!.get(binding.workflowId) : null };
+  });
+
+  // ---- Development Workspace (V4/S10): filesystem, git, terminal, conversation ----
+  app.get("/api/projects/:id/files", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!deps.workspace) return reply.code(501).send({ error: "workspace unavailable" });
+    const path = (req.query as { path?: string }).path ?? "";
+    try {
+      return await deps.workspace.listTree(id, path);
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.get("/api/projects/:id/file", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!deps.workspace) return reply.code(501).send({ error: "workspace unavailable" });
+    const path = (req.query as { path?: string }).path ?? "";
+    if (!path) return reply.code(400).send({ error: "path required" });
+    try {
+      return await deps.workspace.readFile(id, path);
+    } catch (err) {
+      return reply.code(404).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.get("/api/projects/:id/files/search", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!deps.workspace) return reply.code(501).send({ error: "workspace unavailable" });
+    const q = (req.query as { q?: string }).q ?? "";
+    try {
+      return { results: await deps.workspace.searchFiles(id, q) };
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.get("/api/projects/:id/git/diff", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!deps.workspace) return reply.code(501).send({ error: "workspace unavailable" });
+    const base = (req.query as { base?: string }).base ?? null;
+    try {
+      return await deps.workspace.diff(id, base);
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.get("/api/projects/:id/git/status", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!deps.workspace) return reply.code(501).send({ error: "workspace unavailable" });
+    try {
+      return await deps.workspace.statusSummary(id);
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.get("/api/projects/:id/git/log", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!deps.workspace) return reply.code(501).send({ error: "workspace unavailable" });
+    const path = (req.query as { path?: string }).path ?? "";
+    if (!path) return reply.code(400).send({ error: "path required" });
+    try {
+      return { history: await deps.workspace.fileHistory(id, path) };
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.post("/api/projects/:id/terminal", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!deps.terminals || !deps.workspace) return reply.code(501).send({ error: "terminal unavailable" });
+    const body = z.object({ type: z.enum(["USER", "AGENT", "TEST", "BUILD"]).default("USER") }).safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: "invalid input" });
+    try {
+      const project = projects.getProject(id);
+      const cwd = project.repositoryPath;
+      if (!cwd) return reply.code(400).send({ error: "project has no repository" });
+      return { session: deps.terminals.create(id, body.data.type, cwd) };
+    } catch (err) {
+      return reply.code(500).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.post("/api/terminal/:termId/input", async (req, reply) => {
+    const { termId } = req.params as { termId: string };
+    if (!deps.terminals) return reply.code(501).send({ error: "terminal unavailable" });
+    const body = z.object({ data: z.string().min(1).max(2000) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid input" });
+    const ok = deps.terminals.write(termId, body.data.data);
+    return ok ? { sent: true } : reply.code(409).send({ error: "terminal not running" });
+  });
+
+  app.post("/api/terminal/:termId/kill", async (req, reply) => {
+    const { termId } = req.params as { termId: string };
+    if (!deps.terminals) return reply.code(501).send({ error: "terminal unavailable" });
+    const ok = deps.terminals.kill(termId);
+    return ok ? { killed: true } : reply.code(404).send({ error: "unknown terminal" });
+  });
+
+  app.get("/api/terminal/:termId/output", async (req, reply) => {
+    const { termId } = req.params as { termId: string };
+    if (!deps.terminals) return reply.code(501).send({ error: "terminal unavailable" });
+    const after = Number.parseInt((req.query as { afterSeq?: string }).afterSeq ?? "0", 10) || 0;
+    const session = deps.terminals.get(termId);
+    if (!session) return reply.code(404).send({ error: "unknown terminal" });
+    return { session, ...deps.terminals.outputSince(termId, after) };
+  });
+
+  app.get("/api/projects/:id/conversation", async (req) => {
+    const { id } = req.params as { id: string };
+    return { messages: deps.conversation?.history(id) ?? [] };
+  });
+
+  app.post("/api/projects/:id/conversation", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!deps.conversation) return reply.code(501).send({ error: "conversation unavailable" });
+    const body = z.object({ text: z.string().min(1).max(8000) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid input" });
+    try {
+      return await deps.conversation.handleUserMessage(id, body.data.text);
+    } catch (err) {
+      return reply.code(500).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ---- Pre-Implementation Contract (V5/S11) ----
+  app.get("/api/projects/:id/contract", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!deps.contract) return reply.code(501).send({ error: "contract service unavailable" });
+    const existing = deps.contract.get(id);
+    return { contract: existing };
+  });
+
+  app.post("/api/projects/:id/contract/refresh", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!deps.contract) return reply.code(501).send({ error: "contract service unavailable" });
+    try {
+      return { contract: await deps.contract.refresh(id) };
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   // ---- Safe edit demo/test seam ----

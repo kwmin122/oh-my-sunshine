@@ -48,6 +48,15 @@ export class ContextCompiler {
             : "- Task completes when its verification commands pass",
         priority: "NEVER_TRUNCATE",
       },
+      ...(params.task.handoffNotes
+        ? [
+            {
+              title: "LATEST OPERATOR NOTES",
+              body: params.task.handoffNotes,
+              priority: "NEVER_TRUNCATE" as const,
+            },
+          ]
+        : []),
       {
         title: "ENGINEERING CONSTITUTION (excerpt)",
         body: [
