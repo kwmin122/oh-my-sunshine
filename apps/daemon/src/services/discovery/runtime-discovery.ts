@@ -23,7 +23,7 @@ export interface DiscoveredRuntime {
 const CANDIDATES: Array<{ id: string; bin: string; authProbe?: string[] }> = [
   { id: "claude-code", bin: "claude", authProbe: ["auth", "status"] },
   { id: "codex-cli", bin: "codex", authProbe: ["login", "status"] },
-  { id: "opencode", bin: "opencode" },
+  { id: "opencode", bin: "opencode", authProbe: ["auth", "list"] },
 ];
 
 async function which(bin: string): Promise<string | null> {
@@ -44,22 +44,51 @@ export async function probeVersion(bin: string): Promise<string | null> {
   }
 }
 
-/** Runs the CLI's own status probe. Never parses or stores tokens — only posture. */
-async function probeAuth(bin: string, args?: string[]): Promise<{ authStatus: DiscoveredRuntime["authStatus"]; authMethod: string | null; accountHint: string | null }> {
+/** Runs the CLI's own status probe. Never parses or stores tokens — only posture.
+ * Verified live: claude 2.1.241 emits JSON {"loggedIn": true, "email": …};
+ * codex 0.149.1 prints "Logged in using ChatGPT"; opencode 1.18.23 `auth list`
+ * prints a credentials table with exit 0 when at least one provider is set up. */
+export async function probeAuth(bin: string, args?: string[]): Promise<{ authStatus: DiscoveredRuntime["authStatus"]; authMethod: string | null; accountHint: string | null }> {
   if (!args) return { authStatus: "UNKNOWN", authMethod: null, accountHint: null };
+  let stdout = "";
+  let stderr = "";
+  let failed = false;
   try {
-    const { stdout } = await execFileAsync(bin, args, { timeout: 15_000 });
-    const text = stdout.toLowerCase();
-    let status: DiscoveredRuntime["authStatus"] = "UNKNOWN";
-    if (text.includes("logged in") || text.includes('"logged_in": true') || text.includes('"loggedin": true')) status = "LOGGED_IN";
-    else if (text.includes("not logged in") || text.includes('"logged_in": false') || text.includes("logged out")) status = "NOT_LOGGED_IN";
-    const email = stdout.match(/[\w.+-]+@[\w-]+\.[\w.]+/);
-    const method = text.includes("subscription") ? "Subscription OAuth" : text.includes("api") ? "API key" : null;
-    return { authStatus: status, authMethod: method, accountHint: email ? email[0] : null };
-  } catch {
-    // Non-zero exit usually means not logged in; still honest: unknown.
-    return { authStatus: "UNKNOWN", authMethod: null, accountHint: null };
+    const res = await execFileAsync(bin, args, { timeout: 15_000 });
+    stdout = res.stdout;
+    stderr = res.stderr ?? "";
+  } catch (err) {
+    const e = err as { stdout?: string; stderr?: string };
+    stdout = e.stdout ?? "";
+    stderr = e.stderr ?? "";
+    failed = true;
   }
+  const text = `${stdout} ${stderr}`.toLowerCase();
+  // Claude Code emits machine-readable JSON — parse it before falling back to text.
+  const claudeJson = (() => {
+    try { return JSON.parse(stdout) as { loggedIn?: boolean; email?: string; authMethod?: string }; } catch { return null; }
+  })();
+  const email = claudeJson?.email ?? stdout.match(/[\w.+-]+@[\w-]+\.[\w.]+/)?.[0] ?? null;
+
+  let status: DiscoveredRuntime["authStatus"] = "UNKNOWN";
+  if (claudeJson && typeof claudeJson.loggedIn === "boolean") {
+    status = claudeJson.loggedIn ? "LOGGED_IN" : "NOT_LOGGED_IN";
+  } else if (text.includes("not logged in") || text.includes("logged out")) {
+    // negations MUST be tested before the generic "logged in" substring match
+    status = "NOT_LOGGED_IN";
+  } else if (text.includes("logged in") || text.includes('"loggedin": true') || text.includes("logged_in\": true")) {
+    status = "LOGGED_IN";
+  } else if (!failed && text.includes("credentials") && !text.includes("no credentials")) {
+    // opencode `auth list` shows a Credentials table only when something exists.
+    status = "LOGGED_IN";
+  }
+
+  let method: string | null = null;
+  if (claudeJson?.authMethod) method = claudeJson.authMethod;
+  else if (text.includes("subscription")) method = "Subscription OAuth";
+  else if (text.includes("chatgpt")) method = "ChatGPT subscription";
+  else if (text.includes("api key") || text.includes("\"api\"") || text.includes("api")) method = "API key";
+  return { authStatus: status, authMethod: method, accountHint: email };
 }
 
 export async function discoverRuntimes(): Promise<DiscoveredRuntime[]> {
