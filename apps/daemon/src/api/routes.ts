@@ -606,6 +606,12 @@ export function registerRoutes(app: FastifyInstance, deps: {
   app.post("/api/projects/:id/workflow/apply", async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!deps.workflowComposer) return reply.code(501).send({ error: "workflow composer unavailable" });
+    // Validate the project exists — never persist bindings for ghosts (review R4).
+    try {
+      projects.getProject(id);
+    } catch {
+      return reply.code(404).send({ error: "unknown project" });
+    }
     const body = z.object({ workflowId: z.string().min(1).nullable() }).safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: "invalid input" });
     try {

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -56,9 +56,22 @@ interface CliSession {
   input: RuntimeStartInput;
   result: string | null;
   failure: CliFailure | null;
+  /** Detail accompanying the failure (stderr excerpt) — survives repeat polls. */
+  failureDetail: string;
   child: ReturnType<typeof spawn> | null;
   cancelled: boolean;
   timedOut: boolean;
+}
+
+/** Long agent runs stream a lot of JSONL — cap the retained buffer so a
+ * runaway process cannot exhaust daemon memory (review R1). Parsers only need
+ * complete lines; the tail is what matters for terminal events. */
+const MAX_STREAM_BUFFER = 8 * 1024 * 1024;
+
+function appendCapped(buffer: string, chunk: string): string {
+  const next = buffer + chunk;
+  if (next.length <= MAX_STREAM_BUFFER) return next;
+  return next.slice(next.length - MAX_STREAM_BUFFER);
 }
 
 // ---------------------------------------------------------------------------
@@ -327,7 +340,7 @@ export class CliAgentRuntimeAdapter implements AgentRuntimeAdapter {
   }
 
   async start(input: RuntimeStartInput): Promise<RuntimeSessionHandle> {
-    this.sessions.set(input.runId, { input, result: null, failure: null, child: null, cancelled: false, timedOut: false });
+    this.sessions.set(input.runId, { input, result: null, failure: null, failureDetail: "", child: null, cancelled: false, timedOut: false });
     this.emit(input.runId, input.taskId, { kind: "STARTING", text: `${this.cfg.id} starting`, meta: { unsupportedSettings: this.cfg.kind === "claude-code" && input.modelHint?.effort ? ["effort"] : [] } });
     return { sessionId: input.runId };
   }
@@ -336,15 +349,27 @@ export class CliAgentRuntimeAdapter implements AgentRuntimeAdapter {
     const s = this.sessions.get(handle.sessionId)!;
     if (s.result !== null || s.failure) {
       // Repeat poll after completion: FINISH (or the same failure), never a re-run.
-      if (s.failure) throw this.failureError(s.failure, s.result ?? "");
+      if (s.failure) throw this.failureError(s.failure, s.failureDetail);
       return { proposal: { kind: "FINISH", summary: `[${this.cfg.id}] ${s.result!.slice(0, 4000)}` } };
     }
 
     const modelHint = s.input.modelHint;
-    const lastMessageFile =
-      this.cfg.kind === "codex-cli"
-        ? join(mkdtempSync(join(tmpdir(), "devflow-codex-")), "last-message.txt")
-        : null;
+    let lastMessageDir: string | null = null;
+    if (this.cfg.kind === "codex-cli") {
+      lastMessageDir = mkdtempSync(join(tmpdir(), "devflow-codex-"));
+    }
+    const lastMessageFile = lastMessageDir ? join(lastMessageDir, "last-message.txt") : null;
+    // Every exit path below must remove the temp dir (review R2: no tmp leak).
+    const cleanupTemp = (): void => {
+      if (lastMessageDir) {
+        try {
+          rmSync(lastMessageDir, { recursive: true, force: true });
+        } catch {
+          // best-effort
+        }
+        lastMessageDir = null;
+      }
+    };
     const args = buildArgs(this.cfg.kind, {
       model: modelHint?.model ?? null,
       effort: modelHint?.effort ?? null,
@@ -368,8 +393,8 @@ export class CliAgentRuntimeAdapter implements AgentRuntimeAdapter {
 
     let stdout = "";
     let stderr = "";
-    child.stdout?.on("data", (d) => (stdout += d));
-    child.stderr?.on("data", (d) => (stderr += d));
+    child.stdout?.on("data", (d) => (stdout = appendCapped(stdout, d)));
+    child.stderr?.on("data", (d) => (stderr = appendCapped(stderr, d)));
 
     const closed = new Promise<void>((resolve) => {
       child.on("close", () => resolve());
@@ -389,11 +414,15 @@ export class CliAgentRuntimeAdapter implements AgentRuntimeAdapter {
 
     if (s.cancelled) {
       s.failure = "CANCELLED";
+      s.failureDetail = "cancelled by user";
+      cleanupTemp();
       this.emit(s.input.runId, s.input.taskId, { kind: "CANCELLED", text: "cancelled by user" });
       throw this.failureError("CANCELLED", "");
     }
     if (s.timedOut) {
       s.failure = "TIMEOUT";
+      s.failureDetail = stderr.slice(0, 300);
+      cleanupTemp();
       this.emit(s.input.runId, s.input.taskId, {
         kind: "FAILED",
         text: "timeout exceeded — process terminated",
@@ -407,6 +436,8 @@ export class CliAgentRuntimeAdapter implements AgentRuntimeAdapter {
 
     if (child.exitCode !== 0) {
       s.failure = classifyCliFailure({ code: child.exitCode, signal: child.signalCode ?? undefined, stderr });
+      s.failureDetail = stderr.slice(0, 300);
+      cleanupTemp();
       this.emit(s.input.runId, s.input.taskId, {
         kind: "FAILED",
         text: `${s.failure}: ${stderr.slice(0, 300)}`,
@@ -416,6 +447,8 @@ export class CliAgentRuntimeAdapter implements AgentRuntimeAdapter {
     }
     if (outcome.failure) {
       s.failure = outcome.failure;
+      s.failureDetail = stderr.slice(0, 300);
+      cleanupTemp();
       throw this.failureError(outcome.failure, stderr);
     }
 
@@ -425,6 +458,7 @@ export class CliAgentRuntimeAdapter implements AgentRuntimeAdapter {
       const fromFile = readTextFile(lastMessageFile);
       if (fromFile) finalText = fromFile;
     }
+    cleanupTemp();
     s.result = finalText ?? "(no structured output captured)";
     this.emit(s.input.runId, s.input.taskId, { kind: "FINISHED", text: s.result.slice(0, 2000) });
     return { proposal: { kind: "FINISH", summary: `[${this.cfg.id}] ${s.result.slice(0, 4000)}` } };

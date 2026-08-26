@@ -143,6 +143,15 @@ async function main(): Promise<void> {
           at: e.at,
         },
       });
+      // Review R3: a CLI working silently is still progress. Touch the session's
+      // liveness clock so the watchdog never marks an active run STALLED.
+      const run = docs.get<{ sessionId: string | null }>("agent_run", e.runId);
+      if (run?.sessionId) {
+        const session = docs.get<{ id: string; liveness: string; lastProgressAt: string }>("agent_session", run.sessionId);
+        if (session && session.liveness === "ACTIVE_PROGRESS") {
+          docs.put("agent_session", session.id, owner.projectId, { ...session, lastProgressAt: e.at });
+        }
+      }
     } catch (err) {
       log.warn("runtime event sink failed", { error: err instanceof Error ? err.message : String(err) });
     }
@@ -311,10 +320,12 @@ async function main(): Promise<void> {
   await app.register(cors, { origin: true });
   await app.register(websocket);
 
-  // Shutdown guard registered before routes: once draining starts, no new runs.
+  // Shutdown guard registered before routes: once draining starts, no mutating
+  // requests — including mobile commands — may touch state (review R12).
   let shuttingDown = false;
   app.addHook("onRequest", async (req, reply) => {
-    if (shuttingDown && req.method === "POST" && !req.url.startsWith("/api/m/")) {
+    const readOnly = req.method === "GET" || req.method === "HEAD";
+    if (shuttingDown && !readOnly) {
       await reply.code(503).send({ error: "daemon is shutting down" });
     }
   });
@@ -401,8 +412,12 @@ async function main(): Promise<void> {
         try { safeEdit.release(lease.id); } catch { /* keep draining */ }
       }
     }
-    // Stop the HTTP server, checkpoint WAL into the main DB file, close cleanly.
+    // Stop the HTTP server, audit completion, checkpoint WAL into the main DB
+    // file, then close cleanly (review R13: complete-event precedes close).
     await app.close().catch(() => undefined);
+    try {
+      events.append({ projectId: "system" as never, type: "daemon.shutdown_complete" as never, entityType: "system", entityId: null, actorType: "ENGINE", payload: { signal, stopped } });
+    } catch { /* best-effort */ }
     closeDatabase(db);
     log.info("graceful shutdown complete");
     process.exit(0);

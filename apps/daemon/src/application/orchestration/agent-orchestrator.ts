@@ -357,9 +357,14 @@ export class AgentOrchestrator {
       const proposal = proposalResult.proposal;
 
       switch (proposal.kind) {
-        case "FINISH":
+        case "FINISH": {
+          // Review R7: a drained (SYSTEM_SHUTDOWN) run must not be resurrected
+          // to SUCCEEDED if its process happened to finish during shutdown.
+          const settled = this.ports.docs.get<AgentRun>("agent_run", run.id);
+          if (settled && ["FAILED", "SUCCEEDED"].includes(settled.status)) return settled;
           run.summary = proposal.summary;
           return this.finishSuccess(run, session, task);
+        }
 
         case "RAISE_DECISION": {
           // High-impact ambiguity mid-implementation → block + Decision Inbox (spec §21).
