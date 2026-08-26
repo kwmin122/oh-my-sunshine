@@ -82,8 +82,28 @@ async function main(): Promise<void> {
   const roles = defaultAgentRoles();
   for (const role of roles) docs.put("agent_role", role.id, null, role);
   const roleResolver = {
+    /** Resolution order: builtin catalog → persisted custom role → honest generic.
+     * Never silently reassign an unknown role to a different one (S5). */
     role(roleId: string) {
-      return roles.find((r) => r.id === roleId) ?? roles[0]!;
+      const builtin = roles.find((r) => r.id === roleId);
+      if (builtin) return builtin;
+      const custom = docs.get<import("@devflow/contracts").CustomRole>("custom_role", roleId);
+      if (custom) {
+        return {
+          id: roleId as (typeof roles)[number]["id"],
+          name: custom.name,
+          responsibility: custom.responsibility || custom.instructions || `User-defined role ${custom.name}`,
+          defaultSkills: custom.tools ?? [],
+          defaultPolicyPreset: custom.permissionPreset,
+        };
+      }
+      return {
+        id: roleId as (typeof roles)[number]["id"],
+        name: roleId,
+        responsibility: "User-defined role (generic — no template found)",
+        defaultSkills: [],
+        defaultPolicyPreset: "WORKSPACE" as const,
+      };
     },
   };
 

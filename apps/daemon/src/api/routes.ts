@@ -413,6 +413,36 @@ export function registerRoutes(app: FastifyInstance, deps: {
   // ---- AI Team Composer (spec §31): Role → Runtime → Provider → Model → Effort → Fallback ----
   app.get("/api/team/catalog", async () => ({ catalog: deps.composer.catalog(), roles: deps.composer.roles() }));
 
+  // ---- Custom roles (V3 §20/S5) ----
+  app.get("/api/team/custom-roles", async () => ({ roles: deps.composer.listCustomRoles() }));
+
+  app.post("/api/team/custom-roles", async (req, reply) => {
+    const body = z.object({
+      name: z.string().min(1).max(80),
+      responsibility: z.string().min(1).max(2000),
+      instructions: z.string().max(8000).optional(),
+      tools: z.array(z.string().max(80)).max(30).optional(),
+      requiredCapabilities: z.array(z.enum(["filesystem", "shell", "git", "tests", "network"])).optional(),
+      permissionPreset: z.enum(["READ_ONLY", "WORKSPACE", "ELEVATED_ALLOWED"]),
+      defaultRuntimeId: z.string().max(80).nullish(),
+      expectedOutputs: z.array(z.string().max(200)).max(20).optional(),
+      reviewCriteria: z.array(z.string().max(300)).max(20).optional(),
+    }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid input", detail: body.error.flatten() });
+    try {
+      const role = deps.composer.createCustomRole(body.data);
+      return reply.code(201).send({ role });
+    } catch (err) {
+      return reply.code(409).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.delete("/api/team/custom-roles/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    deps.composer.deleteCustomRole(id);
+    return { deleted: true };
+  });
+
   app.get("/api/team/composition/:id", async (req) => {
     const { id } = req.params as { id: string };
     return {

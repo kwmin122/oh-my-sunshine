@@ -1,5 +1,6 @@
 import type {
   CapabilityMismatch,
+  CustomRole,
   EffortLevel,
   ModelOption,
   ResolvedRuntime,
@@ -102,7 +103,42 @@ export class TeamComposerService {
   }
 
   roles(): ComposerRoleSpec[] {
-    return COMPOSER_ROLES;
+    // Built-ins + user-defined roles (V3 §20) — customs participate everywhere
+    // builtins do: catalog validation, auto-compose, resolution.
+    const customs = this.listCustomRoles().map((r): ComposerRoleSpec => ({
+      roleId: r.id,
+      label: r.name,
+      requires: r.requiredCapabilities ?? [],
+    }));
+    return [...COMPOSER_ROLES, ...customs];
+  }
+
+  // ---------- Custom roles (V3 §20 / S5) ----------
+
+  listCustomRoles(): CustomRole[] {
+    return this.ports.docs.list<CustomRole>("custom_role");
+  }
+
+  createCustomRole(input: Omit<CustomRole, "id" | "createdAt" | "updatedAt"> & { id?: string }): CustomRole {
+    const slug = (input.name || input.id || "role")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48);
+    const id = input.id?.startsWith("role_custom_") ? input.id : `role_custom_${slug}`;
+    if (this.ports.docs.get<CustomRole>("custom_role", id)) {
+      throw new Error(`[team-composer/createCustomRole] role '${id}' already exists`);
+    }
+    const now = new Date().toISOString();
+    const role: CustomRole = { ...input, id, createdAt: now, updatedAt: now };
+    this.ports.docs.put("custom_role", id, null, role);
+    this.emit("*", "team.custom_role_created", id, { name: role.name });
+    return role;
+  }
+
+  deleteCustomRole(id: string): void {
+    this.ports.docs.delete("custom_role", id);
+    this.emit("*", "team.custom_role_deleted", id, {});
   }
 
   // ---------- Persistence: org defaults → role bindings → task overrides ----------
@@ -210,7 +246,7 @@ export class TeamComposerService {
     const catalog = this.catalog();
     const available = catalog.filter((r) => r.available);
     const pick = (roleId: string): { entry: RuntimeCatalogEntry; model: ModelOption; reasons: string[] } => {
-      const spec = COMPOSER_ROLES.find((r) => r.roleId === roleId)!;
+      const spec = this.roles().find((r) => r.roleId === roleId) ?? { roleId, label: roleId, requires: [] as Array<keyof RuntimeCatalogEntry["capabilities"]> };
       const capable = available.filter((r) => spec.requires.every((k) => r.capabilities[k]));
       const pool = capable.length > 0 ? capable : available.filter((r) => r.id === "mock-runtime");
       // Weight by what the role actually does.
@@ -237,7 +273,7 @@ export class TeamComposerService {
       return { entry: best.entry, model: best.model, reasons };
     };
     const bindings: RoleRuntimeBinding[] = [];
-    for (const role of COMPOSER_ROLES) {
+    for (const role of this.roles()) {
       const chosen = pick(role.roleId);
       const fb = available
         .filter((r) => r.id !== chosen.entry.id)
@@ -260,7 +296,7 @@ export class TeamComposerService {
   validate(projectId: string): CapabilityMismatch[] {
     const catalog = this.catalog();
     const mismatches: CapabilityMismatch[] = [];
-    for (const role of COMPOSER_ROLES) {
+    for (const role of this.roles()) {
       const binding = this.getBinding(projectId, role.roleId) ?? this.orgDefaults().find((b) => b.roleId === role.roleId);
       if (!binding) continue;
       const entry = catalog.find((r) => r.id === binding.runtimeId);

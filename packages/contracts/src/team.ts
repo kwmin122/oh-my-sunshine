@@ -91,3 +91,25 @@ export interface ResolvedRuntime {
   fallbackUsed: boolean;
   chain: string[];
 }
+
+/**
+ * User-defined Role (V3 §20): a responsibility template a human composes into
+ * their AI organization. Ids are deterministic slugs so workflows, bindings,
+ * and tasks can reference them across restarts.
+ */
+export interface CustomRole {
+  /** Deterministic: role_custom_<slug-of-name>. */
+  id: string;
+  name: string;
+  responsibility: string;
+  instructions?: string;
+  tools?: string[];
+  requiredCapabilities?: Array<keyof RuntimeCapabilitiesV2>;
+  permissionPreset: "READ_ONLY" | "WORKSPACE" | "ELEVATED_ALLOWED";
+  /** Preferred runtime suggestion surfaced in the Team Composer. */
+  defaultRuntimeId?: string | null;
+  expectedOutputs?: string[];
+  reviewCriteria?: string[];
+  createdAt: string;
+  updatedAt: string;
+}

@@ -39,6 +39,10 @@ export function TeamComposer({ projectId, onChanged }: { projectId: string; onCh
   const [data, setData] = useState<Composition | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [newRoleName, setNewRoleName] = useState("");
+  const [newRoleResp, setNewRoleResp] = useState("");
+  const [newRolePreset, setNewRolePreset] = useState("READ_ONLY");
+  const [newRoleCaps, setNewRoleCaps] = useState<string[]>([]);
 
   const load = useCallback(async (): Promise<void> => {
     setData(await api.get<Composition>(`/api/team/composition/${projectId}`));
@@ -159,6 +163,48 @@ export function TeamComposer({ projectId, onChanged }: { projectId: string; onCh
             </ul>
           </details>
         )}
+      </Panel>
+
+      <Panel title="CUSTOM ROLES" right={<Chip tone="info">V3 §20</Chip>}>
+        <div className="space-y-2 text-xs">
+          {data && (
+            <div className="flex flex-wrap gap-1.5">
+              {data.roles.filter((r) => r.roleId.startsWith("role_custom_")).map((r) => (
+                <Chip key={r.roleId} tone="info">{r.label}</Chip>
+              ))}
+              {data.roles.every((r) => !r.roleId.startsWith("role_custom_")) && <span className="text-neutral-500">No custom roles yet.</span>}
+            </div>
+          )}
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+            <input className="input py-1 text-xs" placeholder="role name (e.g. Performance Reviewer)" value={newRoleName} onChange={(e) => setNewRoleName(e.target.value)} />
+            <input className="input py-1 text-xs" placeholder="responsibility (one line)" value={newRoleResp} onChange={(e) => setNewRoleResp(e.target.value)} />
+            <select className="input py-1 text-xs" value={newRolePreset} onChange={(e) => setNewRolePreset(e.target.value)}>
+              <option value="READ_ONLY">READ_ONLY</option>
+              <option value="WORKSPACE">WORKSPACE</option>
+              <option value="ELEVATED_ALLOWED">ELEVATED_ALLOWED</option>
+            </select>
+            <div className="flex items-center gap-2">
+              {["filesystem", "shell", "git", "tests", "network"].map((cap) => (
+                <label key={cap} className="flex items-center gap-1 text-neutral-400">
+                  <input type="checkbox" checked={newRoleCaps.includes(cap)}
+                    onChange={(e) => setNewRoleCaps(e.target.checked ? [...newRoleCaps, cap] : newRoleCaps.filter((c) => c !== cap))} />
+                  {cap}
+                </label>
+              ))}
+            </div>
+          </div>
+          <button className="btn btn-primary" disabled={busy || !newRoleName.trim() || !newRoleResp.trim()}
+            onClick={() => void act(async () => {
+              await api.post("/api/team/custom-roles", {
+                name: newRoleName.trim(), responsibility: newRoleResp.trim(),
+                permissionPreset: newRolePreset,
+                requiredCapabilities: newRoleCaps,
+              });
+              setNewRoleName(""); setNewRoleResp(""); setNewRoleCaps([]);
+            }, "Custom role created — assign a runtime above.")}>
+            Create role
+          </button>
+        </div>
       </Panel>
     </div>
   );
